@@ -17,7 +17,7 @@ import sys
 import requests
 from bs4 import BeautifulSoup
 
-from db import init_db, get_connection, upsert_listing
+from db import backend_name, fetch_one, init_db, upsert_listing
 from keywords import build_queries
 from serpapi_client import get_client
 
@@ -82,6 +82,7 @@ def run(query: str) -> None:
     init_db()
     results = search_listings(query)
     print(f"SerpAPI returned {len(results)} results for: {query!r}")
+    print(f"  writing to {backend_name()}")
 
     for result in results:
         url = result.get("link")
@@ -96,9 +97,8 @@ def run(query: str) -> None:
         except Exception as exc:  # noqa: BLE001 - keep the crawl going
             print(f"  skip   {url}  ({exc})")
 
-    with get_connection() as conn:
-        (count,) = conn.execute("SELECT COUNT(*) FROM listings").fetchone()
-    print(f"Total listings in apartments.db: {count}")
+    (count,) = fetch_one("SELECT COUNT(*) FROM listings") or (0,)
+    print(f"Total listings stored: {count}")
 
 
 if __name__ == "__main__":

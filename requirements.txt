@@ -9,4 +9,8 @@ serpapi>=0.1.5
 # Env loading (.env.local)
 python-dotenv>=1.0
 
+# Hosted libSQL (Turso) client. Used when TURSO_DATABASE_URL is set; when it is
+# not, db.py falls back to stdlib sqlite3 and this package is never imported.
+libsql-client>=0.3
+
 # NOTE: sqlite3 ships with the Python standard library — no pip package needed.
