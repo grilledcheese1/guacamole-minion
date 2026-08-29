@@ -1,0 +1,12 @@
+# HTML scraping
+beautifulsoup4>=4.12
+lxml>=5.2
+requests>=2.32
+
+# SerpAPI client
+serpapi>=0.1.5
+
+# Env loading (.env.local)
+python-dotenv>=1.0
+
+# NOTE: sqlite3 ships with the Python standard library — no pip package needed.
