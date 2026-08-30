@@ -12,6 +12,9 @@ The backend is chosen at runtime:
 
 libSQL is SQLite-compatible, so the schema and every statement below run
 unchanged against either backend; only the connection differs.
+
+Schema follows ``DESIGN.md`` section 3: ``listings`` gains map/radius columns,
+plus ``price_history`` and ``geocode_cache`` tables.
 """
 
 from __future__ import annotations
@@ -34,10 +37,11 @@ DB_PATH = _PROJECT_ROOT / "apartments.db"
 TURSO_DATABASE_URL: str | None = os.getenv("TURSO_DATABASE_URL") or None
 TURSO_AUTH_TOKEN: str | None = os.getenv("TURSO_AUTH_TOKEN") or None
 
-# Schema as individual statements so both backends can apply it the same way
-# (libSQL has no executescript()).
-_SCHEMA_STATEMENTS: tuple[str, ...] = (
-    """
+# --- Schema -----------------------------------------------------------------
+# Base table keeps only the original columns; the map/radius columns are added
+# via ALTER so a database created before the migration is upgraded in place the
+# same way a fresh one is.
+_CREATE_LISTINGS = """
     CREATE TABLE IF NOT EXISTS listings (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         source      TEXT,
@@ -49,21 +53,70 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         raw_html    TEXT,
         created_at  TEXT DEFAULT (datetime('now'))
     )
-    """,
+"""
+
+# DESIGN.md section 3 — additive columns on listings.
+_LISTINGS_ADDED_COLUMNS: dict[str, str] = {
+    "lat": "REAL",            # geocoded latitude
+    "lng": "REAL",            # geocoded longitude
+    "sqft": "INTEGER",        # parsed unit size, best-effort
+    "image_url": "TEXT",      # og:image / first gallery image
+    "listed_at": "TEXT",      # date the source posted the listing, best-effort
+    "keyword_group": "TEXT",  # KEYWORD_GROUPS bucket that surfaced this row
+    "last_seen_at": "TEXT",   # timestamp of the most recent scrape run that saw this url
+}
+
+_CREATE_PRICE_HISTORY = """
+    CREATE TABLE IF NOT EXISTS price_history (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        listing_id  INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+        price       INTEGER NOT NULL,
+        observed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+"""
+
+_CREATE_GEOCODE_CACHE = """
+    CREATE TABLE IF NOT EXISTS geocode_cache (
+        query       TEXT PRIMARY KEY,
+        lat         REAL,
+        lng         REAL,
+        formatted   TEXT,
+        provider    TEXT NOT NULL DEFAULT 'google',
+        status      TEXT,
+        geocoded_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+"""
+
+_CREATE_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_listings_latlng    ON listings(lat, lng)",
+    "CREATE INDEX IF NOT EXISTS idx_listings_price     ON listings(price)",
+    "CREATE INDEX IF NOT EXISTS idx_listings_last_seen ON listings(last_seen_at)",
+    "CREATE INDEX IF NOT EXISTS idx_listings_kw_group  ON listings(keyword_group)",
+    "CREATE INDEX IF NOT EXISTS idx_price_history_listing ON price_history(listing_id, observed_at)",
 )
 
 # Positional (?) parameters are the common denominator between sqlite3 and
 # libsql-client, so every call site below uses them.
 _UPSERT_SQL = """
-    INSERT INTO listings (source, title, price, bedrooms, address, url, raw_html)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO listings
+        (source, title, price, bedrooms, address, url, raw_html,
+         sqft, image_url, listed_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(url) DO UPDATE SET
-        title    = excluded.title,
-        price    = excluded.price,
-        bedrooms = excluded.bedrooms,
-        address  = excluded.address,
-        raw_html = excluded.raw_html
+        title        = excluded.title,
+        price        = excluded.price,
+        bedrooms     = excluded.bedrooms,
+        address      = excluded.address,
+        raw_html     = excluded.raw_html,
+        sqft         = excluded.sqft,
+        image_url    = excluded.image_url,
+        listed_at    = excluded.listed_at,
+        last_seen_at = datetime('now')
 """
+
+_INSERT_PRICE_HISTORY_SQL = (
+    "INSERT INTO price_history (listing_id, price) VALUES (?, ?)"
+)
 
 
 def using_turso() -> bool:
@@ -87,8 +140,8 @@ def _turso_client():
     )
 
 
-def _execute(sql: str, params: Sequence[Any] = ()) -> None:
-    """Run a write statement against the active backend."""
+def execute(sql: str, params: Sequence[Any] = ()) -> None:
+    """Run a write/DDL statement against the active backend."""
     if using_turso():
         client = _turso_client()
         try:
@@ -103,6 +156,10 @@ def _execute(sql: str, params: Sequence[Any] = ()) -> None:
             conn.execute(sql, tuple(params))
     finally:
         conn.close()
+
+
+# Backwards-compatible internal alias.
+_execute = execute
 
 
 def fetch_all(sql: str, params: Sequence[Any] = ()) -> list[tuple]:
@@ -127,21 +184,63 @@ def fetch_one(sql: str, params: Sequence[Any] = ()) -> tuple | None:
     return rows[0] if rows else None
 
 
+def _listing_columns() -> set[str]:
+    """Column names currently on the listings table (empty if it doesn't exist)."""
+    return {row[1] for row in fetch_all("PRAGMA table_info(listings)")}
+
+
 def init_db() -> None:
-    for statement in _SCHEMA_STATEMENTS:
-        _execute(statement)
+    """Create/upgrade the schema. Idempotent — safe to call on every run."""
+    execute(_CREATE_LISTINGS)
+
+    have = _listing_columns()
+    for name, decl in _LISTINGS_ADDED_COLUMNS.items():
+        if name not in have:
+            execute(f"ALTER TABLE listings ADD COLUMN {name} {decl}")
+
+    execute(_CREATE_PRICE_HISTORY)
+    execute(_CREATE_GEOCODE_CACHE)
+    for statement in _CREATE_INDEXES:
+        execute(statement)
 
 
 def upsert_listing(listing: dict) -> None:
-    _execute(
+    """Insert or update a listing by url. Records a price_history row when the
+    price is first seen and whenever it changes on a subsequent scrape."""
+    url = listing.get("url")
+    new_price = listing.get("price")
+
+    prior = (
+        fetch_one("SELECT id, price FROM listings WHERE url = ?", (url,))
+        if url
+        else None
+    )
+
+    execute(
         _UPSERT_SQL,
         (
             listing.get("source"),
             listing.get("title"),
-            listing.get("price"),
+            new_price,
             listing.get("bedrooms"),
             listing.get("address"),
-            listing.get("url"),
+            url,
             listing.get("raw_html"),
+            listing.get("sqft"),
+            listing.get("image_url"),
+            listing.get("listed_at"),
         ),
     )
+
+    if not url or new_price is None:
+        return
+
+    if prior is None:
+        # First time we've seen this url — seed its price series.
+        row = fetch_one("SELECT id FROM listings WHERE url = ?", (url,))
+        if row is not None:
+            execute(_INSERT_PRICE_HISTORY_SQL, (row[0], new_price))
+    else:
+        prior_id, prior_price = prior
+        if prior_price != new_price:
+            execute(_INSERT_PRICE_HISTORY_SQL, (prior_id, new_price))
