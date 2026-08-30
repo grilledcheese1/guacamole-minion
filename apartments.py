@@ -48,10 +48,64 @@ def fetch_html(url: str) -> str:
 
 _PRICE_RE = re.compile(r"\$\s?([\d,]{3,})")
 _BED_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:bed|bd|br)\b", re.IGNORECASE)
+_SQFT_RE = re.compile(
+    r"([\d,]{2,7})\s*(?:sq\.?\s*ft\.?|sqft|square\s*feet|ft²|ft2)\b", re.IGNORECASE
+)
+_JSONLD_DATE_RE = re.compile(
+    r'"date(?:Posted|Published|Created)"\s*:\s*"([^"]+)"', re.IGNORECASE
+)
+
+
+def _extract_sqft(text: str) -> int | None:
+    match = _SQFT_RE.search(text)
+    if not match:
+        return None
+    try:
+        value = int(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    return value if 100 <= value <= 100_000 else None
+
+
+def _extract_image_url(soup: BeautifulSoup) -> str | None:
+    """Prefer the og:image meta tag; fall back to twitter:image."""
+    for attrs in (
+        {"property": "og:image"},
+        {"property": "og:image:url"},
+        {"name": "twitter:image"},
+        {"name": "twitter:image:src"},
+    ):
+        tag = soup.find("meta", attrs=attrs)
+        content = tag.get("content", "").strip() if tag else ""
+        if content:
+            return content
+    return None
+
+
+def _extract_listed_at(soup: BeautifulSoup, html: str) -> str | None:
+    """Best-effort posted/published date from meta tags, <time>, or JSON-LD."""
+    for attrs in (
+        {"property": "article:published_time"},
+        {"itemprop": "datePosted"},
+        {"itemprop": "datePublished"},
+        {"name": "date"},
+    ):
+        tag = soup.find("meta", attrs=attrs)
+        content = tag.get("content", "").strip() if tag else ""
+        if content:
+            return content
+
+    time_tag = soup.find("time", attrs={"datetime": True})
+    if time_tag and time_tag.get("datetime", "").strip():
+        return time_tag["datetime"].strip()
+
+    match = _JSONLD_DATE_RE.search(html)
+    return match.group(1) if match else None
 
 
 def parse_listing(url: str, html: str, source: str) -> dict:
-    """Best-effort extraction of price / bedrooms / address from a listing page."""
+    """Best-effort extraction of price / bedrooms / address / sqft / image /
+    posted-date from a listing page."""
     soup = BeautifulSoup(html, "lxml")
     text = soup.get_text(" ", strip=True)
 
@@ -74,6 +128,9 @@ def parse_listing(url: str, html: str, source: str) -> dict:
         "bedrooms": bedrooms,
         "address": address,
         "url": url,
+        "sqft": _extract_sqft(text),
+        "image_url": _extract_image_url(soup),
+        "listed_at": _extract_listed_at(soup, html),
         "raw_html": html[:200_000],
     }
 
