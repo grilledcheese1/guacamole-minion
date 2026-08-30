@@ -1,5 +1,9 @@
-"""SerpAPI (Google engine) search-query keywords tuned to surface CHEAP apartment
-listings. Mirror of src/keywords.js for the Python scraper.
+"""SerpAPI search-query keywords tuned to surface CHEAP apartment listings.
+Mirror of src/keywords.js for the Python scraper.
+
+`build_search_plan` routes each query to an engine: google_maps for place-style
+queries (results carry gps_coordinates, so those listings skip geocoding) and the
+google text engine for site:-filtered and attribute queries Maps can't serve.
 
     from keywords import CHEAP_APARTMENT_KEYWORDS, build_queries
 
@@ -119,3 +123,89 @@ def build_queries(
     # De-dupe, preserve order.
     seen: set[str] = set()
     return [q for q in queries if not (q in seen or seen.add(q))]
+
+
+# --- Engine routing -------------------------------------------------------
+# Keyword groups phrased as place-type searches ("<kind of place>"), which the
+# google_maps engine indexes well and answers with gps_coordinates. Groups not
+# listed here (subsidy-program jargon, low-barrier attributes, deals, and the
+# site:-filtered "sources" group) stay on the google text engine.
+MAP_FRIENDLY_GROUPS: frozenset[str] = frozenset(
+    {"budget", "price_capped", "unit_types"}
+)
+
+# Substrings that mark a query as a web search rather than a place search, even
+# inside an otherwise map-friendly group.
+_MAP_UNFRIENDLY_TOKENS: tuple[str, ...] = (
+    "site:",
+    "craigslist",
+    "zillow",
+    "hotpads",
+    "zumper",
+    "trulia",
+    "apartments.com",
+    "padmapper",
+    "facebook marketplace",
+    "no credit check",
+    "no application fee",
+    "second chance",
+    "section 8",
+    "hud ",
+    "waitlist",
+)
+
+
+def is_map_friendly(query: str) -> bool:
+    """True when `query` reads as a place search the google_maps engine can serve
+    (and therefore return gps_coordinates for)."""
+    lowered = query.lower()
+    return not any(token in lowered for token in _MAP_UNFRIENDLY_TOKENS)
+
+
+def build_search_plan(
+    location: str = "",
+    max_price: int | None = None,
+    groups: list[str] | None = None,
+    with_sites: bool = False,
+) -> list[tuple[str, str]]:
+    """Expand the curated keywords into ``(engine, query)`` pairs.
+
+    ``engine`` is ``"google_maps"`` for place-style queries — their results carry
+    gps_coordinates, so the listings skip geocoding — and ``"google"`` for
+    everything else, including the ``site:``-filtered queries the maps engine
+    cannot serve. Deduped, order preserved.
+    """
+    plan: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(engine: str, query: str) -> None:
+        key = (engine, query)
+        if key not in seen:
+            seen.add(key)
+            plan.append(key)
+
+    selected = groups if groups else list(KEYWORD_GROUPS)
+    for group in selected:
+        map_ok = group in MAP_FRIENDLY_GROUPS
+        for kw in KEYWORD_GROUPS.get(group, ()):
+            if map_ok and is_map_friendly(kw):
+                q = kw
+                if max_price:
+                    q += f" under ${max_price}"
+                if location:
+                    q += f" {location}"  # Maps prefers "<thing> <place>"
+                _add("google_maps", q)
+            else:
+                q = kw
+                if max_price:
+                    q += f" under ${max_price}"
+                if location:
+                    q += f" in {location}"
+                _add("google", q)
+
+    if with_sites:
+        anchor = f"cheap apartments in {location}" if location else "cheap apartments"
+        for site in LISTING_SITES:
+            _add("google", f"{anchor} site:{site}")
+
+    return plan
