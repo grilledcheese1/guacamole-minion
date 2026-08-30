@@ -77,6 +77,7 @@ export const DEFAULT_FILTERS = {
   bedrooms: null,
   keywordGroups: [],
   sourceSite: "",
+  showDismissed: false,
   sort: "newest",
 };
 
@@ -122,6 +123,9 @@ export function filtersFromSearchParams(input) {
     sourceSite: SOURCE_SITE_OPTIONS.includes(sp.get("sourceSite") || "")
       ? sp.get("sourceSite")
       : "",
+    showDismissed: ["1", "true", "yes"].includes(
+      (sp.get("showDismissed") || "").toLowerCase(),
+    ),
     sort,
   };
 }
@@ -142,6 +146,7 @@ export function filtersToSearchParams(filters) {
   if (filters.bedrooms != null) sp.set("bedrooms", String(filters.bedrooms));
   for (const group of filters.keywordGroups) sp.append("keywordGroup", group);
   if (filters.sourceSite) sp.set("sourceSite", filters.sourceSite);
+  if (filters.showDismissed) sp.set("showDismissed", "1");
   if (filters.sort && filters.sort !== "newest") sp.set("sort", filters.sort);
   return sp;
 }
@@ -163,6 +168,7 @@ export function filtersToApiParams(filters, limit = 300) {
     params.keywordGroup = filters.keywordGroups; // array -> repeated query param
   }
   if (filters.sourceSite) params.sourceSite = filters.sourceSite;
+  if (filters.showDismissed) params.includeDismissed = 1;
 
   const sort =
     filters.sort === "distance" && !hasPoint ? "newest" : filters.sort;

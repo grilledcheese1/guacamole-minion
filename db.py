@@ -14,7 +14,9 @@ libSQL is SQLite-compatible, so the schema and every statement below run
 unchanged against either backend; only the connection differs.
 
 Schema follows ``DESIGN.md`` section 3: ``listings`` gains map/radius columns,
-plus ``price_history`` and ``geocode_cache`` tables.
+plus ``price_history`` and ``geocode_cache`` tables, plus a ``status`` lifecycle
+column: ``active`` (default), ``unavailable`` (scraper: 404 / content gone), or
+``dismissed`` (user: "not interested", set via the API).
 """
 
 from __future__ import annotations
@@ -64,6 +66,7 @@ _LISTINGS_ADDED_COLUMNS: dict[str, str] = {
     "listed_at": "TEXT",      # date the source posted the listing, best-effort
     "keyword_group": "TEXT",  # KEYWORD_GROUPS bucket that surfaced this row
     "last_seen_at": "TEXT",   # timestamp of the most recent scrape run that saw this url
+    "status": "TEXT DEFAULT 'active'",  # active | unavailable | dismissed
 }
 
 _CREATE_PRICE_HISTORY = """
@@ -92,6 +95,7 @@ _CREATE_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_listings_price     ON listings(price)",
     "CREATE INDEX IF NOT EXISTS idx_listings_last_seen ON listings(last_seen_at)",
     "CREATE INDEX IF NOT EXISTS idx_listings_kw_group  ON listings(keyword_group)",
+    "CREATE INDEX IF NOT EXISTS idx_listings_status    ON listings(status)",
     "CREATE INDEX IF NOT EXISTS idx_price_history_listing ON price_history(listing_id, observed_at)",
 )
 
@@ -101,25 +105,29 @@ _CREATE_INDEXES = (
 # On conflict, NULL-prone fields use COALESCE(excluded.x, listings.x): a
 # re-scrape that lacks a value (e.g. the google_maps path has no sqft/beds, the
 # google text path has no coordinates) must not wipe what another path already
-# stored. `lat`/`lng` come from google_maps gps_coordinates or the geocode
-# backfill.
+# stored. `keyword_group` keeps the FIRST bucket that surfaced the URL
+# (COALESCE(listings.x, excluded.x)). A successful re-scrape sets `status` back
+# to 'active' unless the user has 'dismissed' it — that choice is sticky.
 _UPSERT_SQL = """
     INSERT INTO listings
         (source, title, price, bedrooms, address, url, raw_html,
-         sqft, image_url, listed_at, lat, lng, last_seen_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+         sqft, image_url, listed_at, lat, lng, keyword_group, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(url) DO UPDATE SET
-        title        = excluded.title,
-        price        = COALESCE(excluded.price, listings.price),
-        bedrooms     = COALESCE(excluded.bedrooms, listings.bedrooms),
-        address      = COALESCE(excluded.address, listings.address),
-        raw_html     = COALESCE(excluded.raw_html, listings.raw_html),
-        sqft         = COALESCE(excluded.sqft, listings.sqft),
-        image_url    = COALESCE(excluded.image_url, listings.image_url),
-        listed_at    = COALESCE(excluded.listed_at, listings.listed_at),
-        lat          = COALESCE(excluded.lat, listings.lat),
-        lng          = COALESCE(excluded.lng, listings.lng),
-        last_seen_at = datetime('now')
+        title         = excluded.title,
+        price         = COALESCE(excluded.price, listings.price),
+        bedrooms      = COALESCE(excluded.bedrooms, listings.bedrooms),
+        address       = COALESCE(excluded.address, listings.address),
+        raw_html      = COALESCE(excluded.raw_html, listings.raw_html),
+        sqft          = COALESCE(excluded.sqft, listings.sqft),
+        image_url     = COALESCE(excluded.image_url, listings.image_url),
+        listed_at     = COALESCE(excluded.listed_at, listings.listed_at),
+        lat           = COALESCE(excluded.lat, listings.lat),
+        lng           = COALESCE(excluded.lng, listings.lng),
+        keyword_group = COALESCE(listings.keyword_group, excluded.keyword_group),
+        status        = CASE WHEN listings.status = 'dismissed'
+                             THEN 'dismissed' ELSE 'active' END,
+        last_seen_at  = datetime('now')
 """
 
 _INSERT_PRICE_HISTORY_SQL = (
@@ -239,6 +247,7 @@ def upsert_listing(listing: dict) -> None:
             listing.get("listed_at"),
             listing.get("lat"),
             listing.get("lng"),
+            listing.get("keyword_group"),
         ),
     )
 
@@ -254,3 +263,14 @@ def upsert_listing(listing: dict) -> None:
         prior_id, prior_price = prior
         if prior_price != new_price:
             execute(_INSERT_PRICE_HISTORY_SQL, (prior_id, new_price))
+
+
+def mark_unavailable(url: str) -> None:
+    """Flag a stored listing as no longer available (404/410, or price + title
+    gone from the page). No-op for URLs we've never stored; never overrides a
+    user's 'dismissed' choice."""
+    execute(
+        "UPDATE listings SET status = 'unavailable' "
+        "WHERE url = ? AND COALESCE(status, 'active') <> 'dismissed'",
+        (url,),
+    )

@@ -133,30 +133,36 @@ function MapInner({ listings, selectedId, onSelect, center, radiusMiles }) {
       )}
       {hasCenter && <MarkerF position={center} icon={centerPin()} zIndex={1000} />}
 
-      {mapped.map((listing) => (
-        <MarkerF
-          key={listing.id}
-          position={{ lat: listing.lat, lng: listing.lng }}
-          icon={pricePin(listing.price, listing.id === selectedId)}
-          zIndex={listing.id === selectedId ? 999 : 1}
-          onClick={() => onSelect(listing)}
-        />
-      ))}
+      {mapped.map((listing) => {
+        const unavailable = listing.status === "unavailable";
+        return (
+          <MarkerF
+            key={listing.id}
+            position={{ lat: listing.lat, lng: listing.lng }}
+            icon={pricePin(listing.price, listing.id === selectedId, unavailable)}
+            zIndex={
+              listing.id === selectedId ? 999 : unavailable ? 0 : 1
+            }
+            onClick={() => onSelect(listing)}
+          />
+        );
+      })}
     </GoogleMap>
   );
 }
 
-/** Rounded price-pill marker as an inline SVG data URI, in DESIGN.md colours. */
-function pricePin(price, selected) {
+/** Rounded price-pill marker as an inline SVG data URI, in DESIGN.md colours.
+ *  `muted` renders unavailable listings in the stone/muted greys. */
+function pricePin(price, selected, muted) {
   const label =
     price == null ? "—" : `$${Number(price).toLocaleString("en-US")}`;
   const width = Math.max(46, Math.round(20 + label.length * 8.5));
   const boxHeight = 26;
   const totalHeight = boxHeight + 8;
 
-  const fill = selected ? "#00ed64" : "#001e2b";
-  const stroke = selected ? "#00684a" : "#00ed64";
-  const text = selected ? "#001e2b" : "#00ed64";
+  const fill = selected ? "#00ed64" : muted ? "#7c8c9a" : "#001e2b";
+  const stroke = selected ? "#00684a" : muted ? "#a8b3bc" : "#00ed64";
+  const text = selected ? "#001e2b" : muted ? "#ffffff" : "#00ed64";
   const midX = width / 2;
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${totalHeight}" viewBox="0 0 ${width} ${totalHeight}">

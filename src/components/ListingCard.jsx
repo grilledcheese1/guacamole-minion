@@ -9,8 +9,12 @@ import {
 
 /**
  * One result in the list. Styled to DESIGN.md `card-base`; the selected card
- * takes the `card-feature`-style brand border. The heart is a sibling of the
- * card button (not nested) so both stay valid, independently clickable buttons.
+ * takes the `card-feature`-style brand border. The heart and the "not
+ * interested" button are siblings of the card button (not nested) so all three
+ * stay valid, independently clickable buttons.
+ *
+ * Lifecycle: `listing.status === "unavailable"` greys the card out (DESIGN.md
+ * stone/muted tokens); `dismissed` cards show an Undo control.
  */
 export default function ListingCard({
   listing,
@@ -18,10 +22,15 @@ export default function ListingCard({
   onSelect,
   favorite,
   onToggleFavorite,
+  dismissed,
+  onDismiss,
+  onRestore,
 }) {
   const seen = timeAgo(listing.lastSeenAt || listing.createdAt);
   const distance = formatDistance(listing.distanceMiles);
-  const priceDropped = listing.priceDelta != null && listing.priceDelta < 0;
+  const unavailable = listing.status === "unavailable";
+  const priceDropped =
+    !unavailable && listing.priceDelta != null && listing.priceDelta < 0;
 
   const meta = [
     formatBeds(listing.bedrooms),
@@ -29,8 +38,17 @@ export default function ListingCard({
     distance,
   ].filter(Boolean);
 
+  const wrapClass = [
+    "listing-card-wrap",
+    active && "is-active",
+    unavailable && "listing-card-wrap--unavailable",
+    dismissed && "listing-card-wrap--dismissed",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div className={`listing-card-wrap${active ? " is-active" : ""}`}>
+    <div className={wrapClass}>
       <button
         type="button"
         className={`listing-card${active ? " listing-card--active" : ""}`}
@@ -63,6 +81,16 @@ export default function ListingCard({
             </div>
           )}
           <div className="listing-card__foot">
+            {unavailable && (
+              <span className="status-badge status-badge--unavailable">
+                Unavailable
+              </span>
+            )}
+            {dismissed && !unavailable && (
+              <span className="status-badge status-badge--dismissed">
+                Dismissed
+              </span>
+            )}
             {priceDropped && (
               <span className="price-drop-badge">
                 ↓ {formatPrice(Math.abs(listing.priceDelta))}
@@ -84,6 +112,24 @@ export default function ListingCard({
         aria-label={favorite ? "Remove from favorites" : "Save to favorites"}
       >
         <span aria-hidden="true">{favorite ? "♥" : "♡"}</span>
+      </button>
+
+      <button
+        type="button"
+        className="dismiss-btn"
+        onClick={() =>
+          dismissed ? onRestore(listing.id) : onDismiss(listing.id)
+        }
+        title={
+          dismissed
+            ? "Show this listing again"
+            : "Not interested — hide this listing"
+        }
+        aria-label={
+          dismissed ? "Restore listing" : "Dismiss listing — not interested"
+        }
+      >
+        <span aria-hidden="true">{dismissed ? "↩" : "✕"}</span>
       </button>
     </div>
   );

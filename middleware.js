@@ -21,6 +21,11 @@ export default async function middleware(request) {
   if (!password) return; // gate disabled
 
   const url = new URL(request.url);
+
+  // Public PWA + favicon assets — let install prompts and the offline shell
+  // work without a session. (start_url "/" and /api/* stay gated.)
+  if (isPublicAsset(url.pathname)) return;
+
   const expectedToken = await hmacHex(password, TOKEN_CONTEXT);
 
   // 1. Login form submission.
@@ -96,6 +101,17 @@ function htmlResponse(html, status) {
       "X-Robots-Tag": "noindex, nofollow",
     },
   });
+}
+
+function isPublicAsset(pathname) {
+  return (
+    pathname === "/manifest.json" ||
+    pathname === "/sw.js" ||
+    pathname === "/icon.svg" ||
+    pathname === "/vite.svg" ||
+    pathname === "/favicon.ico" ||
+    pathname.startsWith("/icons/")
+  );
 }
 
 function sanitizeNext(value) {
