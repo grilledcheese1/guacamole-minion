@@ -39,8 +39,10 @@ export default function App() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [view, setView] = useState("list"); // mobile only: "list" | "map"
   const [selected, setSelected] = useState(null);
-  // IDs dismissed this session — hide them immediately without waiting for a refetch.
-  const [dismissedIds, setDismissedIds] = useState(() => new Set());
+  // Optimistic per-listing status overrides ("dismissed" | "active") applied
+  // until a refetch reconciles the fetched data — so a card never renders from a
+  // stale fetched status after a dismiss OR a restore.
+  const [pendingStatus, setPendingStatus] = useState(() => new Map());
 
   const { favoriteIds, favoriteCount, toggle: toggleFavorite, isFavorite } =
     useFavorites();
@@ -70,12 +72,12 @@ export default function App() {
     if (!showDismissed) {
       base = base.filter(
         (listing) =>
-          listing.status !== "dismissed" &&
-          !dismissedIds.has(String(listing.id)),
+          (pendingStatus.get(String(listing.id)) ?? listing.status) !==
+          "dismissed",
       );
     }
     return base;
-  }, [favoritesOnly, listings, favoriteIds, showDismissed, dismissedIds]);
+  }, [favoritesOnly, listings, favoriteIds, showDismissed, pendingStatus]);
 
   const patchFilters = useCallback(
     (patch) => setFilters((prev) => ({ ...prev, ...patch })),
@@ -86,28 +88,27 @@ export default function App() {
     [],
   );
 
-  const dismissListing = useCallback((id) => {
-    setDismissedIds((prev) => new Set(prev).add(String(id)));
-    postStatus(id, "dismissed").catch(() => {
-      // roll back the optimistic hide if the request failed
-      setDismissedIds((prev) => {
-        const next = new Set(prev);
-        next.delete(String(id));
+  const changeStatus = useCallback((id, status) => {
+    const key = String(id);
+    setPendingStatus((prev) => new Map(prev).set(key, status));
+    postStatus(id, status).catch(() => {
+      // request failed — drop the override so the fetched status shows again
+      setPendingStatus((prev) => {
+        const next = new Map(prev);
+        next.delete(key);
         return next;
       });
     });
   }, []);
 
-  const restoreListing = useCallback((id) => {
-    setDismissedIds((prev) => {
-      const next = new Set(prev);
-      next.delete(String(id));
-      return next;
-    });
-    postStatus(id, "active").catch(() => {
-      setDismissedIds((prev) => new Set(prev).add(String(id)));
-    });
-  }, []);
+  const dismissListing = useCallback(
+    (id) => changeStatus(id, "dismissed"),
+    [changeStatus],
+  );
+  const restoreListing = useCallback(
+    (id) => changeStatus(id, "active"),
+    [changeStatus],
+  );
 
   const hasPoint = filters.lat != null && filters.lng != null;
   const activeCount = countActiveFilters(filters);
@@ -258,8 +259,8 @@ export default function App() {
                     favorite={isFavorite(listing.id)}
                     onToggleFavorite={toggleFavorite}
                     dismissed={
-                      listing.status === "dismissed" ||
-                      dismissedIds.has(String(listing.id))
+                      (pendingStatus.get(String(listing.id)) ??
+                        listing.status) === "dismissed"
                     }
                     onDismiss={dismissListing}
                     onRestore={restoreListing}

@@ -38,6 +38,19 @@ export default function ScrapeButton({ onDispatched }) {
   const [errorMsg, setErrorMsg] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const lastTriggerRef = useRef(readLastTrigger());
+  const resetTimerRef = useRef(null);
+
+  // Single tracked "revert to idle" timer: replacing any pending one, so an
+  // expired callback from an earlier request can't clobber a newer one.
+  const scheduleReset = useCallback((ms) => {
+    clearTimeout(resetTimerRef.current);
+    resetTimerRef.current = setTimeout(() => {
+      resetTimerRef.current = null;
+      setPhase("idle");
+    }, ms);
+  }, []);
+
+  useEffect(() => () => clearTimeout(resetTimerRef.current), []);
 
   const remaining = Math.max(
     0,
@@ -55,6 +68,8 @@ export default function ScrapeButton({ onDispatched }) {
 
   const trigger = useCallback(async () => {
     if (busy || coolingDown) return;
+    // A new request starts: cancel any pending revert so it can't fire mid-flight.
+    clearTimeout(resetTimerRef.current);
     setPhase("loading");
     setErrorMsg("");
     try {
@@ -79,13 +94,13 @@ export default function ScrapeButton({ onDispatched }) {
       setNow(Date.now());
       setPhase("done");
       onDispatched?.();
-      setTimeout(() => setPhase("idle"), 4000);
+      scheduleReset(4000);
     } catch (err) {
       setErrorMsg(err.message || "Trigger failed");
       setPhase("error");
-      setTimeout(() => setPhase("idle"), 6000);
+      scheduleReset(6000);
     }
-  }, [busy, coolingDown, onDispatched]);
+  }, [busy, coolingDown, onDispatched, scheduleReset]);
 
   let label = "Run scrape now";
   if (busy) label = "Starting…";

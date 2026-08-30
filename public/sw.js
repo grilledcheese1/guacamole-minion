@@ -4,7 +4,7 @@
  * NO offline data support — /api/* and /__auth always go to the network.
  * Bump CACHE when the shell changes so old caches are dropped on activate.
  */
-const CACHE = "crf-shell-v1";
+const CACHE = "crf-shell-v2";
 const SHELL = [
   "/",
   "/index.html",
@@ -15,14 +15,29 @@ const SHELL = [
   "/icons/icon-512.png",
 ];
 
+// The hashed JS/CSS entry chunks Vite emits are read out of index.html at
+// install time, so the full offline shell is precached without a build-time
+// asset manifest.
+async function precacheShell(cache) {
+  await Promise.all(SHELL.map((url) => cache.add(url).catch(() => {})));
+  try {
+    const html = await (
+      await fetch("/index.html", { cache: "no-cache" })
+    ).text();
+    const assets = [
+      ...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g),
+    ].map((m) => m[1]);
+    await Promise.all(assets.map((url) => cache.add(url).catch(() => {})));
+  } catch {
+    // Offline during install — runtime caching backfills on the next load.
+  }
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) =>
-        // Resilient: one missing asset must not brick the install.
-        Promise.all(SHELL.map((url) => cache.add(url).catch(() => {}))),
-      )
+      .then(precacheShell)
       .then(() => self.skipWaiting()),
   );
 });
