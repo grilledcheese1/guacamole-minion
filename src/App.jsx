@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useListings } from "./lib/useListings.js";
 import { useFavorites } from "./lib/useFavorites.js";
+import { useStatus } from "./lib/useStatus.js";
+import { timeAgo } from "./lib/format.js";
 import {
   DEFAULT_FILTERS,
   SORT_OPTIONS,
@@ -13,10 +15,22 @@ import FilterPanel from "./components/FilterPanel.jsx";
 import ListingCard from "./components/ListingCard.jsx";
 import ListingsMap from "./components/ListingsMap.jsx";
 import ListingDrawer from "./components/ListingDrawer.jsx";
+import ScrapeButton from "./components/ScrapeButton.jsx";
 
 function readInitialFilters() {
   if (typeof window === "undefined") return DEFAULT_FILTERS;
   return filtersFromSearchParams(window.location.search);
+}
+
+const DISMISS_ENDPOINT = "/api/listings";
+
+async function postStatus(id, status) {
+  const res = await fetch(DISMISS_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, status }),
+  });
+  if (!res.ok) throw new Error(`status update failed (${res.status})`);
 }
 
 export default function App() {
@@ -25,9 +39,17 @@ export default function App() {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [view, setView] = useState("list"); // mobile only: "list" | "map"
   const [selected, setSelected] = useState(null);
+  // IDs dismissed this session — hide them immediately without waiting for a refetch.
+  const [dismissedIds, setDismissedIds] = useState(() => new Set());
 
   const { favoriteIds, favoriteCount, toggle: toggleFavorite, isFavorite } =
     useFavorites();
+  const {
+    lastUpdated,
+    loading: statusLoading,
+    error: statusError,
+    refresh: refreshStatus,
+  } = useStatus();
 
   // Mirror filter/sort state into the URL so a search is shareable by link.
   useEffect(() => {
@@ -39,13 +61,21 @@ export default function App() {
   const apiParams = useMemo(() => filtersToApiParams(filters), [filters]);
   const { listings, count, loading, error, refetch } = useListings(apiParams);
 
-  const visibleListings = useMemo(
-    () =>
-      favoritesOnly
-        ? listings.filter((listing) => favoriteIds.has(String(listing.id)))
-        : listings,
-    [favoritesOnly, listings, favoriteIds],
-  );
+  const showDismissed = filters.showDismissed;
+
+  const visibleListings = useMemo(() => {
+    let base = favoritesOnly
+      ? listings.filter((listing) => favoriteIds.has(String(listing.id)))
+      : listings;
+    if (!showDismissed) {
+      base = base.filter(
+        (listing) =>
+          listing.status !== "dismissed" &&
+          !dismissedIds.has(String(listing.id)),
+      );
+    }
+    return base;
+  }, [favoritesOnly, listings, favoriteIds, showDismissed, dismissedIds]);
 
   const patchFilters = useCallback(
     (patch) => setFilters((prev) => ({ ...prev, ...patch })),
@@ -56,9 +86,43 @@ export default function App() {
     [],
   );
 
+  const dismissListing = useCallback((id) => {
+    setDismissedIds((prev) => new Set(prev).add(String(id)));
+    postStatus(id, "dismissed").catch(() => {
+      // roll back the optimistic hide if the request failed
+      setDismissedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(String(id));
+        return next;
+      });
+    });
+  }, []);
+
+  const restoreListing = useCallback((id) => {
+    setDismissedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(String(id));
+      return next;
+    });
+    postStatus(id, "active").catch(() => {
+      setDismissedIds((prev) => new Set(prev).add(String(id)));
+    });
+  }, []);
+
   const hasPoint = filters.lat != null && filters.lng != null;
   const activeCount = countActiveFilters(filters);
-  const displayCount = favoritesOnly ? visibleListings.length : count;
+  const displayCount = visibleListings.length;
+
+  const updatedAgo = timeAgo(lastUpdated);
+  const updatedDate = lastUpdated
+    ? new Date(lastUpdated.replace(" ", "T") + "Z")
+    : null;
+  const isStale =
+    updatedDate && Date.now() - updatedDate.getTime() > 24 * 60 * 60 * 1000;
+  let updatedLabel = "Last updated: unknown";
+  if (statusLoading && !lastUpdated) updatedLabel = "Checking freshness…";
+  else if (!statusError && updatedAgo) updatedLabel = `Updated ${updatedAgo}`;
+  else if (!statusError && !lastUpdated) updatedLabel = "No data yet";
 
   return (
     <div className="app-shell" data-view={view}>
@@ -67,14 +131,23 @@ export default function App() {
           <span className="app-header__dot" />
           Cheap Rent Finder
         </div>
-        <div className="app-header__count">
-          {loading
-            ? "Loading…"
-            : error
-              ? "—"
-              : `${displayCount} ${favoritesOnly ? "saved " : ""}listing${
-                  displayCount === 1 ? "" : "s"
-                }`}
+        <div className="app-header__meta">
+          <span
+            className={`app-header__updated${isStale ? " is-stale" : ""}`}
+            title={updatedDate ? updatedDate.toLocaleString() : undefined}
+          >
+            {updatedLabel}
+          </span>
+          <span className="app-header__count">
+            {loading
+              ? "Loading…"
+              : error
+                ? "—"
+                : `${displayCount} ${favoritesOnly ? "saved " : ""}listing${
+                    displayCount === 1 ? "" : "s"
+                  }`}
+          </span>
+          <ScrapeButton onDispatched={refreshStatus} />
         </div>
       </header>
 
@@ -184,10 +257,23 @@ export default function App() {
                     onSelect={setSelected}
                     favorite={isFavorite(listing.id)}
                     onToggleFavorite={toggleFavorite}
+                    dismissed={
+                      listing.status === "dismissed" ||
+                      dismissedIds.has(String(listing.id))
+                    }
+                    onDismiss={dismissListing}
+                    onRestore={restoreListing}
                   />
                 </li>
               ))}
             </ul>
+          )}
+
+          {!error && (
+            <p className="disclaimer">
+              Listings are scraped from third-party sites — verify price and
+              availability on the original listing before acting on it.
+            </p>
           )}
         </section>
 

@@ -149,6 +149,10 @@ function DrawerContent({ listing }) {
             >
               View original listing ↗
             </a>
+            <p className="disclaimer disclaimer--drawer">
+              Scraped data can be out of date — confirm the price and
+              availability on the original listing before acting on it.
+            </p>
           </div>
         )}
       </div>

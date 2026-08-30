@@ -210,6 +210,20 @@ export default function FilterPanel({ filters, onChange, onClear }) {
         </div>
       </div>
 
+      {/* Dismissed listings ------------------------------------------------ */}
+      <div className="field">
+        <span className="field__label">Dismissed</span>
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={filters.showDismissed}
+          className={`chip-check${filters.showDismissed ? " chip-check--on" : ""}`}
+          onClick={() => onChange({ showDismissed: !filters.showDismissed })}
+        >
+          {filters.showDismissed ? "✓ " : ""}Show dismissed listings
+        </button>
+      </div>
+
       {/* Keyword groups (pill-tab checkboxes) --------------------------------- */}
       <div className="field field--wide">
         <span className="field__label">Keyword groups</span>

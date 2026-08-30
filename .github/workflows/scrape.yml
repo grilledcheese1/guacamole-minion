@@ -1,0 +1,44 @@
+name: scrape
+
+# Runs the Python scraper against the hosted Turso database.
+#   - workflow_dispatch: triggered on demand (the "Run scrape now" button in the
+#     app hits /api/trigger-scrape, which calls the GitHub REST API).
+#   - schedule: a periodic refresh so data doesn't go stale on its own.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *" # every 6 hours
+
+concurrency:
+  group: scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Scrape listings
+        run: python apartments.py
+        env:
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+
+      - name: Geocode new listings
+        continue-on-error: true
+        run: python scripts/backfill_geocode.py
+        env:
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}

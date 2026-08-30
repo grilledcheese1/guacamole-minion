@@ -1,19 +1,24 @@
-// Vercel serverless function — read apartment listings from the same Turso
-// (libSQL) database that apartments.py writes to.
+// Vercel serverless function — read + patch apartment listings in the same
+// Turso (libSQL) database that apartments.py writes to.
 //
 // GET /api/listings
+//   Query params (all optional):
+//     lat, lng         center point, decimal degrees (must be given together)
+//     radiusMiles      only return listings within this many miles of lat/lng
+//     minPrice         inclusive lower price bound (USD)
+//     maxPrice         inclusive upper price bound (USD)
+//     bedrooms         exact bedroom count (e.g. 1, 2, 1.5)
+//     keywordGroup     listings.keyword_group bucket (budget, price_capped, ...).
+//                      Repeatable / comma-separated -> matches any of the buckets.
+//     sourceSite       case-insensitive substring match against listings.source
+//     sort             price_asc | price_desc | distance | newest (default newest)
+//     limit            max rows returned, 1..1000 (default 200)
+//     includeDismissed 1/true -> also return status='dismissed' rows (default: hidden)
+//   Each listing includes `status`: active | unavailable | dismissed.
+//   status='unavailable' rows are always returned (the UI greys them out).
 //
-// Query params (all optional):
-//   lat, lng        center point, decimal degrees (must be given together)
-//   radiusMiles     only return listings within this many miles of lat/lng
-//   minPrice        inclusive lower price bound (USD)
-//   maxPrice        inclusive upper price bound (USD)
-//   bedrooms        exact bedroom count (e.g. 1, 2, 1.5)
-//   keywordGroup    listings.keyword_group bucket (budget, price_capped, ...).
-//                   Repeatable / comma-separated -> matches any of the buckets.
-//   sourceSite      case-insensitive substring match against listings.source
-//   sort            price_asc | price_desc | distance | newest   (default newest)
-//   limit           max rows returned, 1..1000 (default 200)
+// PATCH|POST /api/listings   { "id": <number>, "status": "dismissed" | "active" }
+//   Sets a listing's lifecycle status (the "Not interested" / undo action).
 //
 // Radius search: a bounding-box prefilter runs in SQL, then an exact haversine
 // distance is computed in JS and used to filter (and, for sort=distance, order)
@@ -89,12 +94,74 @@ function parseListParam(value) {
   return [...seen];
 }
 
+function parseBoolParam(value) {
+  const raw = String(firstValue(value) ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
+async function readJsonBody(req) {
+  if (req.body && typeof req.body === "object") return req.body;
+  if (typeof req.body === "string") {
+    try {
+      return JSON.parse(req.body);
+    } catch {
+      return {};
+    }
+  }
+  let raw = "";
+  try {
+    for await (const chunk of req) raw += chunk;
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
 export default async function handler(req, res) {
-  if (req.method !== "GET") {
-    res.setHeader("Allow", "GET");
-    return res.status(405).json({ error: "Method not allowed" });
+  if (req.method === "GET") return handleList(req, res);
+  if (req.method === "PATCH" || req.method === "POST") {
+    return handleStatusUpdate(req, res);
+  }
+  res.setHeader("Allow", "GET, PATCH, POST");
+  return res.status(405).json({ error: "Method not allowed" });
+}
+
+// --- PATCH|POST: set a listing's lifecycle status ------------------------
+async function handleStatusUpdate(req, res) {
+  const body = await readJsonBody(req);
+  const id = Number(body?.id);
+  const status = String(body?.status ?? "").trim();
+
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: "id (positive integer) is required" });
+  }
+  if (status !== "dismissed" && status !== "active") {
+    return res
+      .status(400)
+      .json({ error: 'status must be "dismissed" or "active"' });
   }
 
+  try {
+    const result = await getClient().execute({
+      sql: "UPDATE listings SET status = ? WHERE id = ?",
+      args: [status, id],
+    });
+    if (!Number(result.rowsAffected)) {
+      return res.status(404).json({ error: "listing not found" });
+    }
+  } catch (err) {
+    return res.status(500).json({
+      error: "Database update failed",
+      detail: String(err?.message ?? err),
+    });
+  }
+
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(200).json({ id, status });
+}
+
+// --- GET: list listings -----------------------------------------------
+async function handleList(req, res) {
   // Vercel populates req.query; parse from the URL as a fallback.
   const query =
     req.query ??
@@ -109,6 +176,7 @@ export default async function handler(req, res) {
   const bedrooms = parseNumberParam(query.bedrooms, "bedrooms", errors);
   const keywordGroups = parseListParam(query.keywordGroup);
   const sourceSite = parseStringParam(query.sourceSite);
+  const includeDismissed = parseBoolParam(query.includeDismissed);
   const sort = parseStringParam(query.sort) ?? "newest";
 
   let limit = parseNumberParam(query.limit, "limit", errors) ?? DEFAULT_LIMIT;
@@ -168,6 +236,10 @@ export default async function handler(req, res) {
   if (sourceSite) {
     where.push("LOWER(l.source) LIKE '%' || LOWER(?) || '%'");
     args.push(sourceSite);
+  }
+  if (!includeDismissed) {
+    // `unavailable` rows stay in (the UI greys them); only hide `dismissed`.
+    where.push("COALESCE(l.status, 'active') <> 'dismissed'");
   }
 
   if (wantRadius) {
@@ -230,7 +302,7 @@ export default async function handler(req, res) {
     SELECT
       l.id, l.source, l.title, l.price, l.bedrooms, l.address, l.url,
       l.sqft, l.image_url, l.listed_at, l.keyword_group, l.last_seen_at,
-      l.created_at, l.lat, l.lng,
+      l.created_at, l.lat, l.lng, l.status,
       ph.latest_price, ph.previous_price,
       ph.latest_observed_at, ph.previous_observed_at, ph.observation_count
     FROM listings l
@@ -270,6 +342,7 @@ export default async function handler(req, res) {
       imageUrl: r.image_url,
       lat: r.lat,
       lng: r.lng,
+      status: r.status ?? "active",
       listedAt: r.listed_at,
       keywordGroup: r.keyword_group,
       lastSeenAt: r.last_seen_at,
@@ -321,6 +394,7 @@ export default async function handler(req, res) {
       bedrooms: bedrooms ?? null,
       keywordGroup: keywordGroups.length ? keywordGroups : null,
       sourceSite: sourceSite ?? null,
+      includeDismissed,
     },
     listings: limited,
   });

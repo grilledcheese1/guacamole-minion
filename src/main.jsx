@@ -11,3 +11,13 @@ createRoot(document.getElementById("root")).render(
     </GoogleMapsProvider>
   </React.StrictMode>,
 );
+
+// Register the app-shell service worker (production builds only — keeps it out
+// of Vite's dev / HMR flow).
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // install is best-effort; the app works fine without it
+    });
+  });
+}

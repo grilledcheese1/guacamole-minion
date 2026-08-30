@@ -167,22 +167,23 @@ def build_search_plan(
     max_price: int | None = None,
     groups: list[str] | None = None,
     with_sites: bool = False,
-) -> list[tuple[str, str]]:
-    """Expand the curated keywords into ``(engine, query)`` pairs.
+) -> list[tuple[str, str, str]]:
+    """Expand the curated keywords into ``(engine, query, keyword_group)`` triples.
 
     ``engine`` is ``"google_maps"`` for place-style queries — their results carry
     gps_coordinates, so the listings skip geocoding — and ``"google"`` for
     everything else, including the ``site:``-filtered queries the maps engine
-    cannot serve. Deduped, order preserved.
+    cannot serve (tagged group ``"sources"``). Deduped on ``(engine, query)``,
+    order preserved.
     """
-    plan: list[tuple[str, str]] = []
+    plan: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    def _add(engine: str, query: str) -> None:
+    def _add(engine: str, query: str, group: str) -> None:
         key = (engine, query)
         if key not in seen:
             seen.add(key)
-            plan.append(key)
+            plan.append((engine, query, group))
 
     selected = groups if groups else list(KEYWORD_GROUPS)
     for group in selected:
@@ -194,18 +195,18 @@ def build_search_plan(
                     q += f" under ${max_price}"
                 if location:
                     q += f" {location}"  # Maps prefers "<thing> <place>"
-                _add("google_maps", q)
+                _add("google_maps", q, group)
             else:
                 q = kw
                 if max_price:
                     q += f" under ${max_price}"
                 if location:
                     q += f" in {location}"
-                _add("google", q)
+                _add("google", q, group)
 
     if with_sites:
         anchor = f"cheap apartments in {location}" if location else "cheap apartments"
         for site in LISTING_SITES:
-            _add("google", f"{anchor} site:{site}")
+            _add("google", f"{anchor} site:{site}", "sources")
 
     return plan
