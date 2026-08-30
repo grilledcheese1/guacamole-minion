@@ -97,20 +97,28 @@ _CREATE_INDEXES = (
 
 # Positional (?) parameters are the common denominator between sqlite3 and
 # libsql-client, so every call site below uses them.
+#
+# On conflict, NULL-prone fields use COALESCE(excluded.x, listings.x): a
+# re-scrape that lacks a value (e.g. the google_maps path has no sqft/beds, the
+# google text path has no coordinates) must not wipe what another path already
+# stored. `lat`/`lng` come from google_maps gps_coordinates or the geocode
+# backfill.
 _UPSERT_SQL = """
     INSERT INTO listings
         (source, title, price, bedrooms, address, url, raw_html,
-         sqft, image_url, listed_at, last_seen_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+         sqft, image_url, listed_at, lat, lng, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     ON CONFLICT(url) DO UPDATE SET
         title        = excluded.title,
-        price        = excluded.price,
-        bedrooms     = excluded.bedrooms,
-        address      = excluded.address,
-        raw_html     = excluded.raw_html,
-        sqft         = excluded.sqft,
-        image_url    = excluded.image_url,
-        listed_at    = excluded.listed_at,
+        price        = COALESCE(excluded.price, listings.price),
+        bedrooms     = COALESCE(excluded.bedrooms, listings.bedrooms),
+        address      = COALESCE(excluded.address, listings.address),
+        raw_html     = COALESCE(excluded.raw_html, listings.raw_html),
+        sqft         = COALESCE(excluded.sqft, listings.sqft),
+        image_url    = COALESCE(excluded.image_url, listings.image_url),
+        listed_at    = COALESCE(excluded.listed_at, listings.listed_at),
+        lat          = COALESCE(excluded.lat, listings.lat),
+        lng          = COALESCE(excluded.lng, listings.lng),
         last_seen_at = datetime('now')
 """
 
@@ -229,6 +237,8 @@ def upsert_listing(listing: dict) -> None:
             listing.get("sqft"),
             listing.get("image_url"),
             listing.get("listed_at"),
+            listing.get("lat"),
+            listing.get("lng"),
         ),
     )
 

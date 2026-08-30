@@ -9,7 +9,8 @@
 //   minPrice        inclusive lower price bound (USD)
 //   maxPrice        inclusive upper price bound (USD)
 //   bedrooms        exact bedroom count (e.g. 1, 2, 1.5)
-//   keywordGroup    listings.keyword_group bucket (budget, price_capped, ...)
+//   keywordGroup    listings.keyword_group bucket (budget, price_capped, ...).
+//                   Repeatable / comma-separated -> matches any of the buckets.
 //   sourceSite      case-insensitive substring match against listings.source
 //   sort            price_asc | price_desc | distance | newest   (default newest)
 //   limit           max rows returned, 1..1000 (default 200)
@@ -75,6 +76,19 @@ function parseStringParam(value) {
   return trimmed || undefined;
 }
 
+// Repeatable and/or comma-separated param -> de-duped list of non-empty values.
+function parseListParam(value) {
+  const raw = value === undefined ? [] : Array.isArray(value) ? value : [value];
+  const seen = new Set();
+  for (const entry of raw) {
+    for (const piece of String(entry).split(",")) {
+      const trimmed = piece.trim();
+      if (trimmed) seen.add(trimmed);
+    }
+  }
+  return [...seen];
+}
+
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     res.setHeader("Allow", "GET");
@@ -93,7 +107,7 @@ export default async function handler(req, res) {
   const minPrice = parseNumberParam(query.minPrice, "minPrice", errors);
   const maxPrice = parseNumberParam(query.maxPrice, "maxPrice", errors);
   const bedrooms = parseNumberParam(query.bedrooms, "bedrooms", errors);
-  const keywordGroup = parseStringParam(query.keywordGroup);
+  const keywordGroups = parseListParam(query.keywordGroup);
   const sourceSite = parseStringParam(query.sourceSite);
   const sort = parseStringParam(query.sort) ?? "newest";
 
@@ -142,9 +156,14 @@ export default async function handler(req, res) {
     where.push("l.bedrooms = ?");
     args.push(bedrooms);
   }
-  if (keywordGroup) {
+  if (keywordGroups.length === 1) {
     where.push("l.keyword_group = ?");
-    args.push(keywordGroup);
+    args.push(keywordGroups[0]);
+  } else if (keywordGroups.length > 1) {
+    where.push(
+      `l.keyword_group IN (${keywordGroups.map(() => "?").join(", ")})`,
+    );
+    args.push(...keywordGroups);
   }
   if (sourceSite) {
     where.push("LOWER(l.source) LIKE '%' || LOWER(?) || '%'");
@@ -300,7 +319,7 @@ export default async function handler(req, res) {
       minPrice: minPrice ?? null,
       maxPrice: maxPrice ?? null,
       bedrooms: bedrooms ?? null,
-      keywordGroup: keywordGroup ?? null,
+      keywordGroup: keywordGroups.length ? keywordGroups : null,
       sourceSite: sourceSite ?? null,
     },
     listings: limited,

@@ -4,14 +4,19 @@
   "private": true,
   "description": "Apartment hunting scraper — SerpAPI search + BeautifulSoup parsing + SQLite storage",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "dev": "vite",
+    "dev": "vercel dev",
+    "dev:vite-only": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "scrape": "python3 apartments.py"
   },
   "dependencies": {
     "@libsql/client": "^0.17.4",
+    "@react-google-maps/api": "^2.20.8",
     "dotenv": "^16.4.5",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -19,6 +24,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.1.1",
+    "vercel": "^59.10.0",
     "vite": "^8.2.2"
   }
 }

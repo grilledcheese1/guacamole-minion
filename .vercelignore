@@ -1,0 +1,10 @@
+# The Vercel deployment is the Vite frontend + api/*.js functions only.
+# The Python scraper, its deps, and local databases don't belong in the upload.
+*.py
+__pycache__/
+.venv/
+requirements.txt
+*.db
+*.sqlite
+*.sqlite3
+scripts/

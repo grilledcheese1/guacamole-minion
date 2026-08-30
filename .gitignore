@@ -12,6 +12,9 @@ node_modules/
 dist/
 *.local
 
+# Vercel CLI (vercel dev / vercel link)
+.vercel/
+
 # Environment
 .env
 .env.local

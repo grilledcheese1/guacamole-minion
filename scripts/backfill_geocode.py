@@ -92,6 +92,9 @@ def main() -> int:
 
     db.init_db()  # ensure lat/lng columns + geocode_cache exist
 
+    # Rows that already have coordinates (e.g. from the google_maps search path)
+    # are excluded here, so they never trigger a geocode_cache lookup or an API
+    # call.
     rows = db.fetch_all(
         """
         SELECT id, address FROM listings
