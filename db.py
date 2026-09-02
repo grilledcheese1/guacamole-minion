@@ -67,6 +67,7 @@ _LISTINGS_ADDED_COLUMNS: dict[str, str] = {
     "keyword_group": "TEXT",  # KEYWORD_GROUPS bucket that surfaced this row
     "last_seen_at": "TEXT",   # timestamp of the most recent scrape run that saw this url
     "status": "TEXT DEFAULT 'active'",  # active | unavailable | dismissed
+    "location_precision": "TEXT",  # NULL/'exact' = rooftop-ish; 'approximate' = ZIP/city centroid
 }
 
 _CREATE_PRICE_HISTORY = """
@@ -147,13 +148,20 @@ def backend_name() -> str:
 
 def _turso_client():
     """Return a sync libSQL client. Imported lazily so offline dev doesn't need
-    the package installed."""
+    the package installed.
+
+    `libsql-client` maps a ``libsql://`` URL to a WebSocket transport that
+    current Turso rejects; ``https://`` uses Hrana-over-HTTP, which works. The
+    JS `@libsql/client` handles ``libsql://`` fine, so `TURSO_DATABASE_URL` can
+    stay in the canonical ``libsql://`` form everywhere.
+    """
     import libsql_client
 
-    return libsql_client.create_client_sync(
-        url=TURSO_DATABASE_URL,
-        auth_token=TURSO_AUTH_TOKEN,
-    )
+    url = TURSO_DATABASE_URL
+    if url.startswith("libsql://"):
+        url = "https://" + url[len("libsql://") :]
+
+    return libsql_client.create_client_sync(url=url, auth_token=TURSO_AUTH_TOKEN)
 
 
 def execute(sql: str, params: Sequence[Any] = ()) -> None:

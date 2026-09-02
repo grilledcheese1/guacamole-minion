@@ -2,9 +2,13 @@
 """One-off: geocode existing listings that have an address but no lat/lng.
 
 Uses the Google Geocoding API (``GOOGLE_MAPS_API_KEY`` from ``.env.local``) and
-caches every normalized address in the ``geocode_cache`` table, so re-running is
-cheap and never re-bills for an address already looked up (successes *and*
-misses are cached).
+caches every normalized query in the ``geocode_cache`` table, so re-running is
+cheap and never re-bills for a query already looked up (successes *and* misses
+are cached).
+
+When the full address won't resolve, it retries with a coarser query (ZIP, or
+"City, ST") and marks the row ``location_precision = 'approximate'`` so the map
+can render it as a neighbourhood centroid rather than a rooftop pin.
 
 Usage:
     python scripts/backfill_geocode.py [--limit N] [--sleep SECONDS] [--dry-run]
@@ -78,6 +82,55 @@ def call_geocoding_api(address: str, api_key: str) -> tuple[str, float | None, f
     return status, None, None, None
 
 
+_ZIP_RE = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
+# "City, ST" only when the state code sits at the end of the string (optionally
+# followed by a ZIP and/or "USA") — avoids matching English words like
+# "..., no location" as "City, NO".
+_CITY_STATE_RE = re.compile(
+    r"([A-Za-z][A-Za-z .'\-]{1,40}?),\s*([A-Za-z]{2})"
+    r"(?:\s+\d{5}(?:-\d{4})?)?(?:\s*,?\s*(?:USA|US))?\s*$",
+    re.IGNORECASE,
+)
+
+
+def coarse_query(address: str) -> str | None:
+    """A coarser geocodable string from a messy address: a ZIP if present, else a
+    trailing 'City, ST' match. Used as a fallback when the full address won't
+    resolve."""
+    m = _ZIP_RE.search(address)
+    if m:
+        return m.group(1)
+    m = _CITY_STATE_RE.search(address)
+    if m:
+        return f"{m.group(1).strip()}, {m.group(2).upper()}"
+    return None
+
+
+class _StopRun(Exception):
+    """OVER_QUERY_LIMIT — abort the backfill, re-run later."""
+
+
+def geocode(raw: str, api_key: str, sleep: float, dry_run: bool):
+    """Cache-aware geocode of `raw`. Returns (lat, lng, status, api_call), or
+    None when a dry run would need a live call. Raises _StopRun on quota."""
+    key = normalize_address(raw)
+    hit = cached_geocode(key)
+    if hit is not None:
+        return (*hit, False)
+    if dry_run:
+        return None
+    try:
+        status, lat, lng, formatted = call_geocoding_api(raw, api_key)
+    except requests.RequestException as exc:
+        return (None, None, f"request_failed ({exc})", True)
+    store_geocode(key, lat, lng, formatted, status)
+    if sleep:
+        time.sleep(sleep)
+    if status == "OVER_QUERY_LIMIT":
+        raise _StopRun
+    return (lat, lng, status, True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=None, help="cap the number of listings processed")
@@ -108,46 +161,59 @@ def main() -> int:
 
     print(f"{len(rows)} listing(s) need geocoding  ({db.backend_name()})")
 
-    api_calls = cache_hits = updated = unresolved = 0
+    api_calls = cache_hits = updated = approximate = unresolved = 0
 
     for listing_id, address in rows:
-        query = normalize_address(address)
-        hit = cached_geocode(query)
+        try:
+            primary = geocode(address, api_key, args.sleep, args.dry_run)
+        except _StopRun:
+            print("  hit OVER_QUERY_LIMIT — stopping; re-run later")
+            break
 
-        if hit is not None:
-            lat, lng, status = hit
-            cache_hits += 1
-        elif args.dry_run:
-            print(f"  [dry-run] would geocode #{listing_id}: {query!r}")
+        if primary is None:  # dry run, would need a live call
+            print(f"  [dry-run] would geocode #{listing_id}: {address!r}")
             continue
-        else:
-            try:
-                status, lat, lng, formatted = call_geocoding_api(address, api_key)
-            except requests.RequestException as exc:
-                print(f"  #{listing_id} request failed: {exc}")
-                continue
-            api_calls += 1
-            store_geocode(query, lat, lng, formatted, status)
-            if args.sleep:
-                time.sleep(args.sleep)
-            if status == "OVER_QUERY_LIMIT":
-                print("  hit OVER_QUERY_LIMIT — stopping; re-run later")
-                break
+
+        lat, lng, status, api_call = primary
+        (api_calls, cache_hits) = (
+            (api_calls + 1, cache_hits) if api_call else (api_calls, cache_hits + 1)
+        )
+
+        precision = None
+        if lat is None or lng is None:
+            coarse = coarse_query(address)
+            if coarse and normalize_address(coarse) != normalize_address(address):
+                try:
+                    secondary = geocode(coarse, api_key, args.sleep, args.dry_run)
+                except _StopRun:
+                    print("  hit OVER_QUERY_LIMIT — stopping; re-run later")
+                    break
+                if secondary is not None:
+                    s_lat, s_lng, s_status, s_api = secondary
+                    if s_api:
+                        api_calls += 1
+                    if s_lat is not None and s_lng is not None:
+                        lat, lng, status = s_lat, s_lng, s_status
+                        precision = "approximate"
 
         if lat is not None and lng is not None:
             if not args.dry_run:
                 db.execute(
-                    "UPDATE listings SET lat = ?, lng = ? WHERE id = ?",
-                    (lat, lng, listing_id),
+                    "UPDATE listings SET lat = ?, lng = ?, "
+                    "location_precision = ? WHERE id = ?",
+                    (lat, lng, precision, listing_id),
                 )
             updated += 1
+            if precision == "approximate":
+                approximate += 1
+                print(f"  #{listing_id} approximate via {coarse!r}")
         else:
             unresolved += 1
             print(f"  #{listing_id} no coords ({status}): {address!r}")
 
     print(
-        f"done: {updated} updated, {cache_hits} from cache, "
-        f"{api_calls} API call(s), {unresolved} unresolved"
+        f"done: {updated} updated ({approximate} approximate), "
+        f"{cache_hits} from cache, {api_calls} API call(s), {unresolved} unresolved"
     )
     return 0
 

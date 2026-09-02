@@ -78,6 +78,7 @@ function DrawerContent({ listing }) {
     formatBeds(listing.bedrooms),
     formatSqft(listing.sqft),
     distance,
+    listing.locationPrecision === "approximate" ? "≈ Approx. location" : null,
   ].filter(Boolean);
 
   const history = listing.priceHistory;

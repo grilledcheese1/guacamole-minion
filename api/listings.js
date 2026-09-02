@@ -302,7 +302,7 @@ async function handleList(req, res) {
     SELECT
       l.id, l.source, l.title, l.price, l.bedrooms, l.address, l.url,
       l.sqft, l.image_url, l.listed_at, l.keyword_group, l.last_seen_at,
-      l.created_at, l.lat, l.lng, l.status,
+      l.created_at, l.lat, l.lng, l.status, l.location_precision,
       ph.latest_price, ph.previous_price,
       ph.latest_observed_at, ph.previous_observed_at, ph.observation_count
     FROM listings l
@@ -343,6 +343,7 @@ async function handleList(req, res) {
       lat: r.lat,
       lng: r.lng,
       status: r.status ?? "active",
+      locationPrecision: r.location_precision ?? null,
       listedAt: r.listed_at,
       keywordGroup: r.keyword_group,
       lastSeenAt: r.last_seen_at,

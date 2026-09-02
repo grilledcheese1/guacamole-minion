@@ -195,7 +195,7 @@ function loginPage({ error, next }) {
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="robots" content="noindex, nofollow" />
-<title>Cheap Rent Finder — private</title>
+<title>Kind Mini — private</title>
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -235,7 +235,7 @@ function loginPage({ error, next }) {
 </head>
 <body>
   <form class="card" method="POST" action="${AUTH_PATH}">
-    <h1><span class="dot" aria-hidden="true"></span>Cheap Rent Finder</h1>
+    <h1><span class="dot" aria-hidden="true"></span>Kind Mini</h1>
     <p class="sub">This site is private. Enter the shared password to continue.</p>
     <label for="password">Password</label>
     <input id="password" name="password" type="password" autocomplete="current-password" autofocus required />

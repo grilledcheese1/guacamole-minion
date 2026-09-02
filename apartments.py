@@ -185,6 +185,19 @@ def fetch_html(url: str) -> str:
 
 
 _PRICE_RE = re.compile(r"\$\s?([\d,]{3,})")
+# Preferred over _PRICE_RE: a price explicitly tagged as monthly rent, so we
+# don't grab the first "$" in the page (a deposit, a fee, or a "similar
+# listings starting at $X" widget rather than this unit's rent).
+_PRICE_MONTHLY_RE = re.compile(
+    r"\$\s?([\d,]{3,})\s*(?:/\s*mo\b|/\s*month\b|per\s*month\b)", re.IGNORECASE
+)
+# schema.org Offer/price, as embedded in a <script type="application/ld+json">
+# block by most listing sites — a structured field, not a text-scan guess.
+_JSONLD_PRICE_RE = re.compile(r'"price"\s*:\s*"?([\d,]{3,})"?', re.IGNORECASE)
+# Sanity bounds so an unrelated dollar figure (a home's sale price, a phone
+# number, a deposit) can't masquerade as monthly rent.
+_PRICE_MIN = 300
+_PRICE_MAX = 20_000
 _BED_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(?:bed|bd|br)\b", re.IGNORECASE)
 _SQFT_RE = re.compile(
     r"([\d,]{2,7})\s*(?:sq\.?\s*ft\.?|sqft|square\s*feet|ft²|ft2)\b", re.IGNORECASE
@@ -203,6 +216,28 @@ def _extract_sqft(text: str) -> int | None:
     except ValueError:
         return None
     return value if 100 <= value <= 100_000 else None
+
+
+def _extract_price(text: str, html: str) -> int | None:
+    """Best-effort monthly rent. Tries, in order of confidence: a price
+    explicitly marked "/mo" or "per month", a schema.org JSON-LD `price`
+    field, then the first bare "$amount" in the page as a last resort — each
+    candidate has to fall within a plausible rent range, so a deposit, fee,
+    home-sale price, or unrelated "similar listings" figure doesn't get
+    mistaken for this unit's rent."""
+    for pattern, haystack in (
+        (_PRICE_MONTHLY_RE, text),
+        (_JSONLD_PRICE_RE, html),
+        (_PRICE_RE, text),
+    ):
+        for match in pattern.finditer(haystack):
+            try:
+                value = int(match.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            if _PRICE_MIN <= value <= _PRICE_MAX:
+                return value
+    return None
 
 
 def _extract_image_url(soup: BeautifulSoup) -> str | None:
@@ -250,8 +285,7 @@ def parse_listing(url: str, html: str, source: str) -> dict:
     title_tag = soup.find("title")
     title = title_tag.get_text(strip=True) if title_tag else url
 
-    price_match = _PRICE_RE.search(text)
-    price = int(price_match.group(1).replace(",", "")) if price_match else None
+    price = _extract_price(text, html)
 
     bed_match = _BED_RE.search(text)
     bedrooms = float(bed_match.group(1)) if bed_match else None
@@ -319,7 +353,10 @@ def _price_from_map(result: dict) -> int | None:
     if not isinstance(raw, str):
         return None
     match = _PRICE_RE.search(raw)
-    return int(match.group(1).replace(",", "")) if match else None
+    if not match:
+        return None
+    value = int(match.group(1).replace(",", ""))
+    return value if _PRICE_MIN <= value <= _PRICE_MAX else None
 
 
 def parse_map_result(result: dict) -> dict | None:
@@ -462,8 +499,15 @@ def print_summary() -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        run(" ".join(sys.argv[1:]))
+    # A leading --maps runs the given query through the google_maps engine
+    # (results carry gps_coordinates); default is the google text engine.
+    argv = sys.argv[1:]
+    engine = "google"
+    if argv and argv[0] in ("--maps", "--google-maps"):
+        engine, argv = "google_maps", argv[1:]
+
+    if argv:
+        run(" ".join(argv), engine=engine)
     else:
         # No query given: sweep the curated plan — google_maps where it fits,
         # google text search elsewhere (including site:-filtered queries).

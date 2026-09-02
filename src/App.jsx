@@ -63,6 +63,12 @@ export default function App() {
   const apiParams = useMemo(() => filtersToApiParams(filters), [filters]);
   const { listings, count, loading, error, refetch } = useListings(apiParams);
 
+  // Called when a triggered scrape run finishes — pull the fresh data in.
+  const handleScrapeCompleted = useCallback(() => {
+    refetch();
+    refreshStatus();
+  }, [refetch, refreshStatus]);
+
   const showDismissed = filters.showDismissed;
 
   const visibleListings = useMemo(() => {
@@ -129,8 +135,8 @@ export default function App() {
     <div className="app-shell" data-view={view}>
       <header className="app-header">
         <div className="app-header__title">
-          <span className="app-header__dot" />
-          Cheap Rent Finder
+          <img className="app-header__minion" src="/minion2.png" alt="" />
+          Kind Mini
         </div>
         <div className="app-header__meta">
           <span
@@ -148,7 +154,10 @@ export default function App() {
                     displayCount === 1 ? "" : "s"
                   }`}
           </span>
-          <ScrapeButton onDispatched={refreshStatus} />
+          <ScrapeButton
+            onDispatched={refreshStatus}
+            onCompleted={handleScrapeCompleted}
+          />
         </div>
       </header>
 
