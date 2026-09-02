@@ -189,12 +189,12 @@ a {
   letter-spacing: -0.2px;
 }
 
-.app-header__dot {
-  width: 12px;
-  height: 12px;
+.app-header__minion {
+  width: 28px;
+  height: 28px;
   border-radius: var(--r-full);
-  background: var(--brand-green);
-  box-shadow: 0 0 0 4px rgba(0, 237, 100, 0.18);
+  object-fit: cover;
+  flex: none;
 }
 
 .app-header__meta {
@@ -1295,21 +1295,33 @@ a {
   .filter-panel {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--s-md);
-    max-height: 62dvh;
-    overflow-y: auto;
   }
   .split {
-    /* keep the split area from collapsing when the panel is open */
+    /* keep the split area from collapsing when the panel is open (map view) */
     min-height: 240px;
   }
   .list-panel {
     width: 100%;
     border-right: none;
   }
-  .list-panel,
   .map-panel {
     position: absolute;
     inset: 0;
+  }
+  .app-shell[data-view="list"] {
+    /* List view: the filter panel and the results flow as one page instead
+       of being squeezed into a fixed-height split, so opening filters and
+       adjusting them doesn't hide the (live-updating) listings below. */
+    height: auto;
+    min-height: 100dvh;
+  }
+  .app-shell[data-view="list"] .split {
+    display: block;
+  }
+  .app-shell[data-view="list"] .list-panel {
+    position: static;
+    height: auto;
+    overflow-y: visible;
   }
   .app-shell[data-view="list"] .map-panel {
     display: none;

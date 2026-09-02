@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const COOLDOWN_MS = 5 * 60 * 1000; // don't allow re-triggering within 5 minutes
 const STORAGE_KEY = "crf:lastScrapeTrigger";
+const POLL_INTERVAL_MS = 8000;
+const POLL_FIRST_DELAY_MS = 5000;
+const POLL_MAX_MS = 10 * 60 * 1000; // give up polling after 10 minutes
 
 function readLastTrigger() {
   try {
@@ -20,7 +23,7 @@ function writeLastTrigger(ts) {
   }
 }
 
-function formatRemaining(ms) {
+function formatDuration(ms) {
   const total = Math.ceil(ms / 1000);
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
@@ -28,20 +31,25 @@ function formatRemaining(ms) {
 }
 
 /**
- * "Run scrape now" — POSTs /api/trigger-scrape (which dispatches the GitHub
- * Actions workflow). Disabled while in flight and for 5 minutes after a
- * successful trigger; the server also enforces the cooldown and a 429 re-syncs
- * this timer. Styled with DESIGN.md `button-primary`.
+ * "Run scrape now" — POSTs /api/trigger-scrape (dispatches the GitHub Actions
+ * workflow), then polls /api/scrape-status until the run finishes and calls
+ * `onCompleted` so the app can refetch. Disabled while running and for 5 minutes
+ * after a successful trigger (the server also enforces the cooldown; a 429
+ * re-syncs the timer). Styled with DESIGN.md `button-primary`.
  */
-export default function ScrapeButton({ onDispatched }) {
-  const [phase, setPhase] = useState("idle"); // idle | loading | done | error
+export default function ScrapeButton({ onDispatched, onCompleted }) {
+  // idle | loading | running | done | error
+  const [phase, setPhase] = useState("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  const [runUrl, setRunUrl] = useState(null);
   const [now, setNow] = useState(() => Date.now());
+
   const lastTriggerRef = useRef(readLastTrigger());
   const resetTimerRef = useRef(null);
+  const pollTimerRef = useRef(null);
+  const pollDeadlineRef = useRef(0);
+  const runStartedRef = useRef(0);
 
-  // Single tracked "revert to idle" timer: replacing any pending one, so an
-  // expired callback from an earlier request can't clobber a newer one.
   const scheduleReset = useCallback((ms) => {
     clearTimeout(resetTimerRef.current);
     resetTimerRef.current = setTimeout(() => {
@@ -50,35 +58,96 @@ export default function ScrapeButton({ onDispatched }) {
     }, ms);
   }, []);
 
-  useEffect(() => () => clearTimeout(resetTimerRef.current), []);
+  const stopPolling = useCallback(() => {
+    clearTimeout(pollTimerRef.current);
+    pollTimerRef.current = null;
+  }, []);
 
-  const remaining = Math.max(
-    0,
-    lastTriggerRef.current + COOLDOWN_MS - now,
+  const pollOnce = useCallback(async () => {
+    let data = null;
+    try {
+      const res = await fetch("/api/scrape-status");
+      data = await res.json().catch(() => null);
+    } catch {
+      /* transient — fall through to reschedule */
+    }
+
+    if (data) {
+      if (data.htmlUrl) setRunUrl(data.htmlUrl);
+
+      if (data.configured === false) {
+        // Can't track the run — treat the dispatch as done.
+        stopPolling();
+        setPhase("done");
+        scheduleReset(4000);
+        return;
+      }
+      if (data.state === "completed") {
+        stopPolling();
+        if (!data.conclusion || data.conclusion === "success") {
+          setPhase("done");
+          onCompleted?.();
+          scheduleReset(5000);
+        } else {
+          setPhase("error");
+          setErrorMsg(`Scrape run ${data.conclusion}`);
+          scheduleReset(10000);
+        }
+        return;
+      }
+    }
+
+    if (Date.now() > pollDeadlineRef.current) {
+      // Give up quietly; the header's 60s status poll still picks up new data.
+      stopPolling();
+      setPhase("idle");
+      return;
+    }
+    pollTimerRef.current = setTimeout(pollOnce, POLL_INTERVAL_MS);
+  }, [onCompleted, scheduleReset, stopPolling]);
+
+  const startPolling = useCallback(() => {
+    stopPolling();
+    runStartedRef.current = Date.now();
+    pollDeadlineRef.current = Date.now() + POLL_MAX_MS;
+    setPhase("running");
+    setNow(Date.now());
+    pollTimerRef.current = setTimeout(pollOnce, POLL_FIRST_DELAY_MS);
+  }, [pollOnce, stopPolling]);
+
+  // Cleanup on unmount.
+  useEffect(
+    () => () => {
+      clearTimeout(resetTimerRef.current);
+      clearTimeout(pollTimerRef.current);
+    },
+    [],
   );
+
+  const remaining = Math.max(0, lastTriggerRef.current + COOLDOWN_MS - now);
   const coolingDown = remaining > 0;
   const busy = phase === "loading";
+  const running = phase === "running";
 
-  // Tick once a second only while the cooldown is counting down.
+  // Tick every second while cooling down or while a run is in progress.
   useEffect(() => {
-    if (!coolingDown) return undefined;
+    if (!coolingDown && !running) return undefined;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [coolingDown]);
+  }, [coolingDown, running]);
 
   const trigger = useCallback(async () => {
-    if (busy || coolingDown) return;
-    // A new request starts: cancel any pending revert so it can't fire mid-flight.
+    if (busy || coolingDown || running) return;
     clearTimeout(resetTimerRef.current);
     setPhase("loading");
     setErrorMsg("");
+    setRunUrl(null);
     try {
       const res = await fetch("/api/trigger-scrape", { method: "POST" });
       const body = await res.json().catch(() => ({}));
 
       if (res.status === 429) {
         const secs = Number(body.retryAfterSeconds) || 300;
-        // Align the local timer with the server's remaining cooldown.
         lastTriggerRef.current = Date.now() - (COOLDOWN_MS - secs * 1000);
         writeLastTrigger(lastTriggerRef.current);
         setNow(Date.now());
@@ -92,20 +161,21 @@ export default function ScrapeButton({ onDispatched }) {
       lastTriggerRef.current = Date.now();
       writeLastTrigger(lastTriggerRef.current);
       setNow(Date.now());
-      setPhase("done");
       onDispatched?.();
-      scheduleReset(4000);
+      startPolling();
     } catch (err) {
       setErrorMsg(err.message || "Trigger failed");
       setPhase("error");
       scheduleReset(6000);
     }
-  }, [busy, coolingDown, onDispatched, scheduleReset]);
+  }, [busy, coolingDown, running, onDispatched, startPolling, scheduleReset]);
 
   let label = "Run scrape now";
   if (busy) label = "Starting…";
-  else if (phase === "done") label = "Scrape queued ✓";
-  else if (coolingDown) label = `Wait ${formatRemaining(remaining)}`;
+  else if (running)
+    label = `Scraping… ${formatDuration(now - runStartedRef.current)}`;
+  else if (phase === "done") label = "Updated ✓";
+  else if (coolingDown) label = `Wait ${formatDuration(remaining)}`;
   else if (phase === "error") label = "Failed — retry";
 
   return (
@@ -114,11 +184,13 @@ export default function ScrapeButton({ onDispatched }) {
         type="button"
         className="btn-primary btn-primary--sm"
         onClick={trigger}
-        disabled={busy || coolingDown}
+        disabled={busy || coolingDown || running}
         title={
-          coolingDown
-            ? "A scrape ran recently — try again shortly"
-            : "Dispatch the GitHub Actions scrape workflow"
+          running
+            ? "Scrape workflow is running…"
+            : coolingDown
+              ? "A scrape ran recently — try again shortly"
+              : "Run the scraper (GitHub Actions) and refresh when it finishes"
         }
       >
         {label}
@@ -126,6 +198,14 @@ export default function ScrapeButton({ onDispatched }) {
       {phase === "error" && errorMsg && (
         <span className="scrape-trigger__error" role="alert">
           {errorMsg}
+          {runUrl && (
+            <>
+              {" "}
+              <a href={runUrl} target="_blank" rel="noreferrer noopener">
+                view run
+              </a>
+            </>
+          )}
         </span>
       )}
     </span>

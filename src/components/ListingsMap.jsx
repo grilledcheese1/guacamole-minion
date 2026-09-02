@@ -135,11 +135,17 @@ function MapInner({ listings, selectedId, onSelect, center, radiusMiles }) {
 
       {mapped.map((listing) => {
         const unavailable = listing.status === "unavailable";
+        const approximate = listing.locationPrecision === "approximate";
         return (
           <MarkerF
             key={listing.id}
             position={{ lat: listing.lat, lng: listing.lng }}
-            icon={pricePin(listing.price, listing.id === selectedId, unavailable)}
+            icon={pricePin(
+              listing.price,
+              listing.id === selectedId,
+              unavailable,
+              approximate,
+            )}
             zIndex={
               listing.id === selectedId ? 999 : unavailable ? 0 : 1
             }
@@ -152,8 +158,9 @@ function MapInner({ listings, selectedId, onSelect, center, radiusMiles }) {
 }
 
 /** Rounded price-pill marker as an inline SVG data URI, in DESIGN.md colours.
- *  `muted` renders unavailable listings in the stone/muted greys. */
-function pricePin(price, selected, muted) {
+ *  `muted` = unavailable (stone/muted greys); `approximate` = coordinates are a
+ *  ZIP/city centroid, not a rooftop — drawn with a dashed border + softer fill. */
+function pricePin(price, selected, muted, approximate) {
   const label =
     price == null ? "—" : `$${Number(price).toLocaleString("en-US")}`;
   const width = Math.max(46, Math.round(20 + label.length * 8.5));
@@ -163,11 +170,13 @@ function pricePin(price, selected, muted) {
   const fill = selected ? "#00ed64" : muted ? "#7c8c9a" : "#001e2b";
   const stroke = selected ? "#00684a" : muted ? "#a8b3bc" : "#00ed64";
   const text = selected ? "#001e2b" : muted ? "#ffffff" : "#00ed64";
+  const fillOpacity = approximate && !selected ? "0.8" : "1";
+  const dash = approximate ? ' stroke-dasharray="3 2"' : "";
   const midX = width / 2;
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${totalHeight}" viewBox="0 0 ${width} ${totalHeight}">
-    <rect x="1" y="1" width="${width - 2}" height="${boxHeight - 2}" rx="12" fill="${fill}" stroke="${stroke}" stroke-width="1.5"/>
-    <path d="M${midX - 6} ${boxHeight - 2} L${midX} ${totalHeight - 1} L${midX + 6} ${boxHeight - 2} Z" fill="${fill}"/>
+    <rect x="1" y="1" width="${width - 2}" height="${boxHeight - 2}" rx="12" fill="${fill}" fill-opacity="${fillOpacity}" stroke="${stroke}" stroke-width="1.5"${dash}/>
+    <path d="M${midX - 6} ${boxHeight - 2} L${midX} ${totalHeight - 1} L${midX + 6} ${boxHeight - 2} Z" fill="${fill}" fill-opacity="${fillOpacity}"/>
     <text x="${midX}" y="${boxHeight / 2 + 4.5}" text-anchor="middle" font-family="Manrope, system-ui, -apple-system, sans-serif" font-size="12.5" font-weight="700" fill="${text}">${label}</text>
   </svg>`;
 

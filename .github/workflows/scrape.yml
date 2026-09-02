@@ -1,13 +1,10 @@
 name: scrape
 
 # Runs the Python scraper against the hosted Turso database.
-#   - workflow_dispatch: triggered on demand (the "Run scrape now" button in the
-#     app hits /api/trigger-scrape, which calls the GitHub REST API).
-#   - schedule: a periodic refresh so data doesn't go stale on its own.
+# On-demand only: the "Run scrape now" button in the app hits /api/trigger-scrape,
+# which calls the GitHub REST API to dispatch this workflow.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 */6 * * *" # every 6 hours
 
 concurrency:
   group: scrape
