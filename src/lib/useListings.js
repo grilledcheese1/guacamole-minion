@@ -34,6 +34,16 @@ export function useListings(params) {
 
   const query = toQueryString(params);
   const abortRef = useRef(null);
+  // Always holds the latest query string, read (not captured) inside poll()'s
+  // async callback so a response from a since-superseded query never merges
+  // stale rows back into fresher, filter-changed state.
+  const queryRef = useRef(query);
+  queryRef.current = query;
+  // Bumped on every poll() call; a response only applies if it's still the
+  // most recently issued poll when it resolves — otherwise a slow request
+  // (cold start, network hiccup) landing after a faster, later one would
+  // overwrite fresher state with stale fields and regress `count`.
+  const pollSeqRef = useRef(0);
 
   const load = useCallback(() => {
     abortRef.current?.abort();
@@ -73,5 +83,42 @@ export function useListings(params) {
     return () => abortRef.current?.abort();
   }, [load]);
 
-  return { ...state, refetch: load };
+  // Background refresh used while a scrape is running: merges in new/updated
+  // rows without ever removing one already on screen. A row can vanish from
+  // this response for reasons that have nothing to do with it no longer
+  // existing — a LIMIT-bounded page shifting as new rows outrank it, a
+  // transient read — so treating "missing from this batch" as "gone" would
+  // make listings flicker in and out while the scrape runs. Once something's
+  // visible, only an explicit filter change (which calls `refetch`, a full
+  // replace) or a user action removes it.
+  const poll = useCallback(() => {
+    const requestQuery = query;
+    const seq = ++pollSeqRef.current;
+    fetch(`/api/listings?${requestQuery}`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data) => {
+        if (!data || !Array.isArray(data.listings)) return;
+        // The filters changed since this request went out — a `load()` already
+        // replaced state for the new query; don't merge this stale response in.
+        if (queryRef.current !== requestQuery) return;
+        // A later poll has already started (or finished) — this one is stale
+        // even though it's arriving now; discard rather than merge it in.
+        if (seq !== pollSeqRef.current) return;
+
+        setState((prev) => {
+          const fresh = new Map(data.listings.map((l) => [String(l.id), l]));
+          const merged = [...data.listings];
+          for (const listing of prev.listings) {
+            if (!fresh.has(String(listing.id))) merged.push(listing);
+          }
+          return { ...prev, listings: merged, count: data.count ?? merged.length };
+        });
+      })
+      .catch(() => {
+        /* transient — the next poll tick tries again; never surface this as
+           a user-facing error or touch loading state */
+      });
+  }, [query]);
+
+  return { ...state, refetch: load, poll };
 }

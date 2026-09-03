@@ -33,11 +33,14 @@ function formatDuration(ms) {
 /**
  * "Run scrape now" — POSTs /api/trigger-scrape (dispatches the GitHub Actions
  * workflow), then polls /api/scrape-status until the run finishes and calls
- * `onCompleted` so the app can refetch. Disabled while running and for 5 minutes
- * after a successful trigger (the server also enforces the cooldown; a 429
- * re-syncs the timer). Styled with DESIGN.md `button-primary`.
+ * `onCompleted` so the app can refetch. Each status-poll tick also calls
+ * `onProgress`, so the app can pull in whatever the scrape has saved so far —
+ * apartments.py upserts results query-by-query as it goes, well before the
+ * run finishes. Disabled while running and for 5 minutes after a successful
+ * trigger (the server also enforces the cooldown; a 429 re-syncs the timer).
+ * Styled with DESIGN.md `button-primary`.
  */
-export default function ScrapeButton({ onDispatched, onCompleted }) {
+export default function ScrapeButton({ onDispatched, onProgress, onCompleted }) {
   // idle | loading | running | done | error
   const [phase, setPhase] = useState("idle");
   const [errorMsg, setErrorMsg] = useState("");
@@ -49,6 +52,17 @@ export default function ScrapeButton({ onDispatched, onCompleted }) {
   const pollTimerRef = useRef(null);
   const pollDeadlineRef = useRef(0);
   const runStartedRef = useRef(0);
+
+  // pollOnce (below) re-schedules itself via setTimeout(pollOnce, ...) —
+  // whichever closure fires tick N is the one that schedules tick N+1, so if
+  // pollOnce closed over onProgress/onCompleted directly, a filter change
+  // mid-run (which gives App.jsx's handlers new identities) would leave the
+  // rest of that run's ticks calling the stale, pre-change callbacks. Reading
+  // through refs keeps pollOnce itself stable and every tick current.
+  const onProgressRef = useRef(onProgress);
+  onProgressRef.current = onProgress;
+  const onCompletedRef = useRef(onCompleted);
+  onCompletedRef.current = onCompleted;
 
   const scheduleReset = useCallback((ms) => {
     clearTimeout(resetTimerRef.current);
@@ -64,6 +78,10 @@ export default function ScrapeButton({ onDispatched, onCompleted }) {
   }, []);
 
   const pollOnce = useCallback(async () => {
+    // Fire on every tick, independent of the status fetch below — a slow or
+    // failed status check shouldn't hold up progressively showing new rows.
+    onProgressRef.current?.();
+
     let data = null;
     try {
       const res = await fetch("/api/scrape-status");
@@ -86,7 +104,7 @@ export default function ScrapeButton({ onDispatched, onCompleted }) {
         stopPolling();
         if (!data.conclusion || data.conclusion === "success") {
           setPhase("done");
-          onCompleted?.();
+          onCompletedRef.current?.();
           scheduleReset(5000);
         } else {
           setPhase("error");
@@ -104,7 +122,7 @@ export default function ScrapeButton({ onDispatched, onCompleted }) {
       return;
     }
     pollTimerRef.current = setTimeout(pollOnce, POLL_INTERVAL_MS);
-  }, [onCompleted, scheduleReset, stopPolling]);
+  }, [scheduleReset, stopPolling]);
 
   const startPolling = useCallback(() => {
     stopPolling();
