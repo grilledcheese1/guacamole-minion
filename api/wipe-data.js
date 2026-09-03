@@ -22,6 +22,7 @@
 
 import { createClient } from "@libsql/client";
 import { createHash, timingSafeEqual } from "node:crypto";
+import { readJsonBody } from "./_http.js";
 
 let cachedClient;
 
@@ -45,24 +46,6 @@ function sha256(value) {
 // never leaks) — same approach middleware.js uses for the site-gate login.
 function passwordMatches(submitted, expected) {
   return timingSafeEqual(sha256(submitted ?? ""), sha256(expected));
-}
-
-async function readJsonBody(req) {
-  if (req.body && typeof req.body === "object") return req.body;
-  if (typeof req.body === "string") {
-    try {
-      return JSON.parse(req.body);
-    } catch {
-      return {};
-    }
-  }
-  let raw = "";
-  try {
-    for await (const chunk of req) raw += chunk;
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
 }
 
 export default async function handler(req, res) {

@@ -31,16 +31,20 @@ function formatDuration(ms) {
 }
 
 /**
- * "Run scrape now" — POSTs /api/trigger-scrape (dispatches the GitHub Actions
- * workflow), then polls /api/scrape-status until the run finishes and calls
- * `onCompleted` so the app can refetch. Each status-poll tick also calls
+ * "Run scrape now" — POSTs /api/trigger-scrape with `scope` ({ location,
+ * maxPrice, keywordGroups }, from the currently-active filters — see
+ * App.jsx), so the scrape itself searches within whatever's set in the
+ * filter panel rather than always running the default nationwide sweep.
+ * Dispatches the GitHub Actions workflow, then polls /api/scrape-status
+ * until the run finishes and calls `onCompleted` so the app can refetch.
+ * Each status-poll tick also calls
  * `onProgress`, so the app can pull in whatever the scrape has saved so far —
  * apartments.py upserts results query-by-query as it goes, well before the
  * run finishes. Disabled while running and for 5 minutes after a successful
  * trigger (the server also enforces the cooldown; a 429 re-syncs the timer).
  * Styled with DESIGN.md `button-primary`.
  */
-export default function ScrapeButton({ onDispatched, onProgress, onCompleted }) {
+export default function ScrapeButton({ onDispatched, onProgress, onCompleted, scope }) {
   // idle | loading | running | done | error
   const [phase, setPhase] = useState("idle");
   const [errorMsg, setErrorMsg] = useState("");
@@ -161,7 +165,11 @@ export default function ScrapeButton({ onDispatched, onProgress, onCompleted }) 
     setErrorMsg("");
     setRunUrl(null);
     try {
-      const res = await fetch("/api/trigger-scrape", { method: "POST" });
+      const res = await fetch("/api/trigger-scrape", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(scope || {}),
+      });
       const body = await res.json().catch(() => ({}));
 
       if (res.status === 429) {
@@ -186,7 +194,7 @@ export default function ScrapeButton({ onDispatched, onProgress, onCompleted }) 
       setPhase("error");
       scheduleReset(6000);
     }
-  }, [busy, coolingDown, running, onDispatched, startPolling, scheduleReset]);
+  }, [busy, coolingDown, running, onDispatched, startPolling, scheduleReset, scope]);
 
   let label = "Run scrape now";
   if (busy) label = "Starting…";

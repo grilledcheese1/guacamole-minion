@@ -1,11 +1,23 @@
 // Vercel serverless function — dispatch the GitHub Actions `scrape.yml` workflow
-// on demand (the app's "Run scrape now" button).
+// on demand (the app's "Run scrape now" button), optionally scoped to whatever
+// filters were active in the browser when it was clicked.
 //
-// POST /api/trigger-scrape   (no body)
-//   -> 200 { ok: true, dispatchedAt, workflow, ref }        workflow queued
-//   -> 429 { error, retryAfterSeconds, lastRunAt }          a run started < 5 min ago
-//   -> 501 { error }                                        server not configured
-//   -> 502 { error, githubStatus, detail }                  GitHub rejected it
+// POST /api/trigger-scrape
+//   Body (all optional — omit/blank runs the original unscoped, nationwide
+//   sweep of every keyword group):
+//     { "location": "Austin, TX", "maxPrice": 1200, "keywordGroups": ["budget"] }
+//   -> 200 { ok: true, dispatchedAt, workflow, ref, scope }  workflow queued
+//   -> 429 { error, retryAfterSeconds, lastRunAt }           a run started < 5 min ago
+//   -> 501 { error }                                         server not configured
+//   -> 502 { error, githubStatus, detail }                   GitHub rejected it
+//
+// `location`/`maxPrice`/`keywordGroups` are forwarded as scrape.yml's
+// workflow_dispatch inputs (location/max_price/groups), which it maps to
+// SCRAPE_LOCATION/SCRAPE_MAX_PRICE/SCRAPE_GROUPS env vars for apartments.py to
+// read into keywords.build_search_plan(...). keywordGroups values must match
+// apartments.py's keywords.KEYWORD_GROUPS keys (same snake_case strings
+// src/lib/filters.js's `filters.keywordGroups` already uses) — anything else
+// is silently dropped rather than forwarded to a run that won't recognize it.
 //
 // Env:
 //   GITHUB_TOKEN     (required) PAT with `repo` scope, or fine-grained with
@@ -16,31 +28,49 @@
 //   SCRAPE_WORKFLOW  workflow file name (default: "scrape.yml")
 //   SCRAPE_REF       git ref to run on (default: VERCEL_GIT_COMMIT_REF or "main")
 
-const GITHUB_API = "https://api.github.com";
+import {
+  GITHUB_API,
+  githubHeaders,
+  resolveRepo,
+  scrapeWorkflowName,
+} from "./_github.js";
+import { readJsonBody } from "./_http.js";
+
 const COOLDOWN_MS = 5 * 60 * 1000;
-const USER_AGENT = "cheap-rent-finder";
+const MAX_LOCATION_LEN = 200;
 
-function resolveRepo() {
-  const explicit = (process.env.GITHUB_REPO || "").trim();
-  if (explicit.includes("/")) {
-    const [owner, repo] = explicit.split("/");
-    if (owner.trim() && repo.trim()) {
-      return { owner: owner.trim(), repo: repo.trim() };
-    }
-  }
-  const owner = process.env.VERCEL_GIT_REPO_OWNER;
-  const repo = process.env.VERCEL_GIT_REPO_SLUG;
-  if (owner && repo) return { owner, repo };
-  return null;
-}
+// apartments.py's keywords.KEYWORD_GROUPS keys — kept in sync by hand (small,
+// stable set; see that file's docstring, "Mirror of src/keywords.js").
+const KNOWN_GROUPS = new Set([
+  "budget",
+  "price_capped",
+  "assistance",
+  "low_barrier",
+  "deals",
+  "unit_types",
+  "sources",
+]);
 
-function githubHeaders(token) {
-  return {
-    Authorization: `Bearer ${token}`,
-    Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": USER_AGENT,
-  };
+/** Trust nothing from the request body beyond what the workflow inputs can
+ * actually use — GitHub requires every workflow_dispatch input as a string. */
+function sanitizeScope(body) {
+  const location =
+    typeof body?.location === "string"
+      ? body.location.trim().slice(0, MAX_LOCATION_LEN)
+      : "";
+
+  const maxPriceNum = Number(body?.maxPrice);
+  const maxPrice =
+    Number.isFinite(maxPriceNum) && maxPriceNum > 0
+      ? Math.round(maxPriceNum)
+      : null;
+
+  const groupsIn = Array.isArray(body?.keywordGroups) ? body.keywordGroups : [];
+  const groups = [...new Set(groupsIn.map(String))].filter((g) =>
+    KNOWN_GROUPS.has(g),
+  );
+
+  return { location, maxPrice, groups };
 }
 
 export default async function handler(req, res) {
@@ -64,8 +94,11 @@ export default async function handler(req, res) {
     });
   }
 
+  const body = await readJsonBody(req);
+  const scope = sanitizeScope(body);
+
   const { owner, repo } = target;
-  const workflow = (process.env.SCRAPE_WORKFLOW || "scrape.yml").trim();
+  const workflow = scrapeWorkflowName();
   const ref = (
     process.env.SCRAPE_REF ||
     process.env.VERCEL_GIT_COMMIT_REF ||
@@ -109,7 +142,14 @@ export default async function handler(req, res) {
     dispatch = await fetch(`${workflowUrl}/dispatches`, {
       method: "POST",
       headers: { ...githubHeaders(token), "Content-Type": "application/json" },
-      body: JSON.stringify({ ref }),
+      body: JSON.stringify({
+        ref,
+        inputs: {
+          location: scope.location,
+          max_price: scope.maxPrice != null ? String(scope.maxPrice) : "",
+          groups: scope.groups.join(","),
+        },
+      }),
     });
   } catch (err) {
     return res.status(502).json({
@@ -124,6 +164,7 @@ export default async function handler(req, res) {
       dispatchedAt: new Date().toISOString(),
       workflow,
       ref,
+      scope,
     });
   }
 
