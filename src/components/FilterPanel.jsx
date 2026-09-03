@@ -19,7 +19,14 @@ import PriceRangeSlider from "./PriceRangeSlider.jsx";
 // be mistaken for a close gesture.
 const CLOSE_OFFSET_PX = 80;
 const CLOSE_VELOCITY = 500;
+// Governs the drag-release spring-back (an aborted close snapping back
+// open) — stays snappy since it's following a hand gesture.
 const SHEET_SPRING = { type: "spring", stiffness: 420, damping: 38 };
+// The button-triggered slide-in, ~1/3 slower than SHEET_SPRING: stiffness
+// and damping both scaled down (by 1.33² and 1.33) so the settle time grows
+// by that fraction while the same damping ratio keeps the motion's shape
+// (how much, if any, overshoot) unchanged — just slower, not floppier.
+const OPEN_SPRING = { type: "spring", stiffness: 237, damping: 29 };
 // Exit target is further up than dragConstraints' top bound so the close
 // animation always continues upward, whatever point mid-drag it started
 // from, rather than snapping back down to this value first.
@@ -101,7 +108,7 @@ export default function FilterPanel({ filters, onChange, onClear, onRequestClose
       initial={{ opacity: 0, y: -12 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: EXIT_Y, transition: { duration: 0.18 } }}
-      transition={SHEET_SPRING}
+      transition={OPEN_SPRING}
       drag="y"
       dragListener={false}
       dragControls={dragControls}
