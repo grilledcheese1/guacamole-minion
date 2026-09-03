@@ -1295,6 +1295,14 @@ a {
   .filter-panel {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--s-md);
+    /* Bounded so the panel can never cover the whole screen by itself — in
+       map view especially, the map (a fixed-size box, not part of the page
+       flow) needs to always stay reachable below it. Scrolls internally past
+       that cap; overscroll-behavior keeps that scroll from chaining into the
+       page/map behind it once it hits the end. */
+    max-height: 50dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
   .split {
     /* keep the split area from collapsing when the panel is open (map view) */
