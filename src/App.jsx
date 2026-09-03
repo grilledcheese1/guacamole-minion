@@ -17,6 +17,7 @@ import ListingCard from "./components/ListingCard.jsx";
 import ListingsMap from "./components/ListingsMap.jsx";
 import ListingDrawer from "./components/ListingDrawer.jsx";
 import ScrapeButton from "./components/ScrapeButton.jsx";
+import WipeDataButton from "./components/WipeDataButton.jsx";
 
 function readInitialFilters() {
   if (typeof window === "undefined") return DEFAULT_FILTERS;
@@ -75,6 +76,14 @@ export default function App() {
   // Called when a triggered scrape run finishes — pull the fresh, fully
   // reconciled data in.
   const handleScrapeCompleted = useCallback(() => {
+    refetch();
+    refreshStatus();
+  }, [refetch, refreshStatus]);
+
+  // Called after a confirmed "Wipe data" — same reconciliation as a finished
+  // scrape, so the (now-empty) state shows immediately rather than waiting
+  // for the next status poll.
+  const handleDataWiped = useCallback(() => {
     refetch();
     refreshStatus();
   }, [refetch, refreshStatus]);
@@ -169,6 +178,7 @@ export default function App() {
             onProgress={handleScrapeProgress}
             onCompleted={handleScrapeCompleted}
           />
+          <WipeDataButton onWiped={handleDataWiped} />
         </div>
       </header>
 
