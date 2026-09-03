@@ -33,11 +33,14 @@ function formatDuration(ms) {
 /**
  * "Run scrape now" — POSTs /api/trigger-scrape (dispatches the GitHub Actions
  * workflow), then polls /api/scrape-status until the run finishes and calls
- * `onCompleted` so the app can refetch. Disabled while running and for 5 minutes
- * after a successful trigger (the server also enforces the cooldown; a 429
- * re-syncs the timer). Styled with DESIGN.md `button-primary`.
+ * `onCompleted` so the app can refetch. Each status-poll tick also calls
+ * `onProgress`, so the app can pull in whatever the scrape has saved so far —
+ * apartments.py upserts results query-by-query as it goes, well before the
+ * run finishes. Disabled while running and for 5 minutes after a successful
+ * trigger (the server also enforces the cooldown; a 429 re-syncs the timer).
+ * Styled with DESIGN.md `button-primary`.
  */
-export default function ScrapeButton({ onDispatched, onCompleted }) {
+export default function ScrapeButton({ onDispatched, onProgress, onCompleted }) {
   // idle | loading | running | done | error
   const [phase, setPhase] = useState("idle");
   const [errorMsg, setErrorMsg] = useState("");
@@ -64,6 +67,10 @@ export default function ScrapeButton({ onDispatched, onCompleted }) {
   }, []);
 
   const pollOnce = useCallback(async () => {
+    // Fire on every tick, independent of the status fetch below — a slow or
+    // failed status check shouldn't hold up progressively showing new rows.
+    onProgress?.();
+
     let data = null;
     try {
       const res = await fetch("/api/scrape-status");
@@ -104,7 +111,7 @@ export default function ScrapeButton({ onDispatched, onCompleted }) {
       return;
     }
     pollTimerRef.current = setTimeout(pollOnce, POLL_INTERVAL_MS);
-  }, [onCompleted, scheduleReset, stopPolling]);
+  }, [onCompleted, onProgress, scheduleReset, stopPolling]);
 
   const startPolling = useCallback(() => {
     stopPolling();

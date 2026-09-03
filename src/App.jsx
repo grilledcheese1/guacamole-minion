@@ -61,9 +61,18 @@ export default function App() {
   }, [filters]);
 
   const apiParams = useMemo(() => filtersToApiParams(filters), [filters]);
-  const { listings, count, loading, error, refetch } = useListings(apiParams);
+  const { listings, count, loading, error, refetch, poll } = useListings(apiParams);
 
-  // Called when a triggered scrape run finishes — pull the fresh data in.
+  // Called on each status-poll tick while a triggered scrape is running —
+  // merges in whatever's landed in the db so far (apartments.py upserts each
+  // query's results as it goes, well before the run finishes) without ever
+  // dropping an already-visible listing.
+  const handleScrapeProgress = useCallback(() => {
+    poll();
+  }, [poll]);
+
+  // Called when a triggered scrape run finishes — pull the fresh, fully
+  // reconciled data in.
   const handleScrapeCompleted = useCallback(() => {
     refetch();
     refreshStatus();
@@ -156,6 +165,7 @@ export default function App() {
           </span>
           <ScrapeButton
             onDispatched={refreshStatus}
+            onProgress={handleScrapeProgress}
             onCompleted={handleScrapeCompleted}
           />
         </div>
