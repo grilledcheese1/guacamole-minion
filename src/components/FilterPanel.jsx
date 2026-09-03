@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { motion, useDragControls, useMotionValue, animate } from "motion/react";
 import { geocodeAddress, useGoogleMaps } from "../lib/googleMaps.jsx";
 import {
   BEDROOM_OPTIONS,
@@ -11,6 +12,19 @@ import {
 } from "../lib/filters.js";
 import PriceRangeSlider from "./PriceRangeSlider.jsx";
 
+// Mobile-only drag-to-close (see the handle bar below): past this offset or
+// fast enough, the panel finishes closing instead of springing back open. The
+// handle is the only drag-initiating surface — dragControls.start() only
+// fires from its onPointerDown — so scrolling the fields below it can never
+// be mistaken for a close gesture.
+const CLOSE_OFFSET_PX = 80;
+const CLOSE_VELOCITY = 500;
+const SHEET_SPRING = { type: "spring", stiffness: 420, damping: 38 };
+// Exit target is further up than dragConstraints' top bound so the close
+// animation always continues upward, whatever point mid-drag it started
+// from, rather than snapping back down to this value first.
+const EXIT_Y = -400;
+
 function priceLabel(min, max) {
   if (min == null && max == null) return "Any price";
   const fmt = (n) => `$${n.toLocaleString("en-US")}`;
@@ -19,11 +33,23 @@ function priceLabel(min, max) {
   return `Up to ${fmt(max)}`;
 }
 
-export default function FilterPanel({ filters, onChange, onClear }) {
+export default function FilterPanel({ filters, onChange, onClear, onRequestClose }) {
   const { hasKey, isLoaded, loadError } = useGoogleMaps();
   const [draftAddress, setDraftAddress] = useState(filters.address);
   const [geoState, setGeoState] = useState("idle"); // idle | loading | error
   const [geoError, setGeoError] = useState("");
+
+  // Drag-to-close (mobile only — see .filter-panel__handle in index.css,
+  // hidden on desktop, which is this drag's only entry point).
+  const dragControls = useDragControls();
+  const y = useMotionValue(0);
+  function handleDragEnd(_event, info) {
+    if (info.offset.y < -CLOSE_OFFSET_PX || info.velocity.y < -CLOSE_VELOCITY) {
+      onRequestClose?.();
+    } else {
+      animate(y, 0, SHEET_SPRING); // short of the threshold — spring back open
+    }
+  }
 
   // Keep the input in sync when filters are cleared/replaced externally.
   useEffect(() => {
@@ -67,7 +93,30 @@ export default function FilterPanel({ filters, onChange, onClear }) {
   const addressDisabled = !hasKey || (hasKey && !isLoaded);
 
   return (
-    <div className="filter-panel" role="region" aria-label="Filters">
+    <motion.div
+      className="filter-panel"
+      role="region"
+      aria-label="Filters"
+      style={{ y }}
+      initial={{ opacity: 0, y: -12 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: EXIT_Y, transition: { duration: 0.18 } }}
+      transition={SHEET_SPRING}
+      drag="y"
+      dragListener={false}
+      dragControls={dragControls}
+      dragConstraints={{ top: EXIT_Y + 80, bottom: 0 }}
+      dragElastic={{ top: 0.2, bottom: 0 }}
+      onDragEnd={handleDragEnd}
+    >
+      <div
+        className="filter-panel__handle"
+        onPointerDown={(event) => dragControls.start(event)}
+        aria-hidden="true"
+      >
+        <span />
+      </div>
+
       {/* Location + radius --------------------------------------------------- */}
       <div className="field">
         <span className="field__label">Location</span>
@@ -263,6 +312,6 @@ export default function FilterPanel({ filters, onChange, onClear }) {
           Clear all filters
         </button>
       </div>
-    </div>
+    </motion.div>
   );
 }

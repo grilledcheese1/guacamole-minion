@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AnimatePresence } from "motion/react";
 import { useListings } from "./lib/useListings.js";
 import { useFavorites } from "./lib/useFavorites.js";
 import { useStatus } from "./lib/useStatus.js";
@@ -223,13 +224,17 @@ export default function App() {
         </label>
       </div>
 
-      {filtersOpen && (
-        <FilterPanel
-          filters={filters}
-          onChange={patchFilters}
-          onClear={clearFilters}
-        />
-      )}
+      <AnimatePresence>
+        {filtersOpen && (
+          <FilterPanel
+            key="filter-panel"
+            filters={filters}
+            onChange={patchFilters}
+            onClear={clearFilters}
+            onRequestClose={() => setFiltersOpen(false)}
+          />
+        )}
+      </AnimatePresence>
 
       <main className="split">
         <section className="list-panel">

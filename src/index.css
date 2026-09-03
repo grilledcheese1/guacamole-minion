@@ -405,13 +405,38 @@ a {
   padding: var(--s-lg) var(--s-xl);
   background: var(--surface);
   border-bottom: 1px solid var(--hairline);
-  animation: panel-in 0.16s ease;
+  /* Enter/exit animation is driven by motion (initial/animate/exit in
+     FilterPanel.jsx), not CSS — it shares the same spring as the mobile
+     drag-to-close gesture so opening and closing feel like one system. */
 }
-@keyframes panel-in {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
+
+/* Drag handle for the mobile drag-to-close gesture — hidden on desktop
+   (below), where the panel is toggled by the Filters button only. */
+.filter-panel__handle {
+  display: none;
+  grid-column: 1 / -1;
+  /* Sticky so it stays reachable at the top of .filter-panel's own scroll
+     (the 50dvh cap above) even once the user's scrolled past the first
+     couple of fields — a drag handle that scrolls out of reach isn't one. */
+  position: sticky;
+  top: calc(var(--s-lg) * -1);
+  z-index: 1;
+  margin: calc(var(--s-lg) * -1) calc(var(--s-xl) * -1) var(--s-sm);
+  padding: var(--s-xs) 0;
+  background: var(--surface);
+  cursor: grab;
+  touch-action: none; /* the drag gesture owns vertical touch movement here, not page scroll */
+}
+.filter-panel__handle:active {
+  cursor: grabbing;
+}
+.filter-panel__handle span {
+  display: block;
+  width: 36px;
+  height: 4px;
+  margin: 0 auto;
+  border-radius: var(--r-full);
+  background: var(--hairline-strong);
 }
 .field {
   display: flex;
@@ -1303,6 +1328,9 @@ a {
     max-height: 50dvh;
     overflow-y: auto;
     overscroll-behavior: contain;
+  }
+  .filter-panel__handle {
+    display: block;
   }
   .split {
     /* keep the split area from collapsing when the panel is open (map view) */
