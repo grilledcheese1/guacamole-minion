@@ -5,19 +5,25 @@
 // POST /api/trigger-scrape
 //   Body (all optional — omit/blank runs the original unscoped, nationwide
 //   sweep of every keyword group):
-//     { "location": "Austin, TX", "maxPrice": 1200, "keywordGroups": ["budget"] }
+//     { "location": "Austin, TX", "maxPrice": 1200, "minPrice": 800,
+//       "bedrooms": 2, "keywordGroups": ["budget"], "sourceSite": "zillow.com",
+//       "lat": 30.267, "lng": -97.743, "radiusMiles": 5 }
 //   -> 200 { ok: true, dispatchedAt, workflow, ref, scope }  workflow queued
 //   -> 429 { error, retryAfterSeconds, lastRunAt }           a run started < 5 min ago
 //   -> 501 { error }                                         server not configured
 //   -> 502 { error, githubStatus, detail }                   GitHub rejected it
 //
-// `location`/`maxPrice`/`keywordGroups` are forwarded as scrape.yml's
-// workflow_dispatch inputs (location/max_price/groups), which it maps to
-// SCRAPE_LOCATION/SCRAPE_MAX_PRICE/SCRAPE_GROUPS env vars for apartments.py to
-// read into keywords.build_search_plan(...). keywordGroups values must match
-// apartments.py's keywords.KEYWORD_GROUPS keys (same snake_case strings
-// src/lib/filters.js's `filters.keywordGroups` already uses) — anything else
-// is silently dropped rather than forwarded to a run that won't recognize it.
+// The body is forwarded as scrape.yml's workflow_dispatch inputs (location,
+// max_price, min_price, bedrooms, groups, sites, lat, lng, radius_miles),
+// which it maps to SCRAPE_* env vars for apartments.py to read into
+// keywords.build_search_plan(...) and apartments.radius_to_ll(...).
+// keywordGroups/sourceSite values must match apartments.py's
+// keywords.KEYWORD_GROUPS keys / LISTING_SITES entries (same strings
+// src/lib/filters.js already uses) — anything else is silently dropped
+// rather than forwarded to a run that won't recognize it. bedrooms/lat/lng
+// are bounds-checked; radiusMiles only takes effect when lat+lng are both
+// present (see apartments.radius_to_ll — it's an approximation, since neither
+// SerpAPI engine has a real numeric-radius parameter).
 //
 // Env:
 //   GITHUB_TOKEN     (required) PAT with `repo` scope, or fine-grained with
@@ -51,6 +57,27 @@ const KNOWN_GROUPS = new Set([
   "sources",
 ]);
 
+// apartments.py's keywords.LISTING_SITES — same hand-synced rationale.
+const KNOWN_SITES = new Set([
+  "zillow.com",
+  "apartments.com",
+  "craigslist.org",
+  "trulia.com",
+  "hotpads.com",
+  "zumper.com",
+  "rent.com",
+  "padmapper.com",
+  "affordablehousing.com",
+]);
+
+// src/lib/filters.js's BEDROOM_OPTIONS values (null/"Any" just omits it).
+const KNOWN_BEDROOMS = new Set([0, 1, 2, 3]);
+
+function positiveIntOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+}
+
 /** Trust nothing from the request body beyond what the workflow inputs can
  * actually use — GitHub requires every workflow_dispatch input as a string. */
 function sanitizeScope(body) {
@@ -59,18 +86,49 @@ function sanitizeScope(body) {
       ? body.location.trim().slice(0, MAX_LOCATION_LEN)
       : "";
 
-  const maxPriceNum = Number(body?.maxPrice);
-  const maxPrice =
-    Number.isFinite(maxPriceNum) && maxPriceNum > 0
-      ? Math.round(maxPriceNum)
-      : null;
+  const maxPrice = positiveIntOrNull(body?.maxPrice);
+  const minPrice = positiveIntOrNull(body?.minPrice);
+
+  const bedroomsNum = Number(body?.bedrooms);
+  const bedrooms = KNOWN_BEDROOMS.has(bedroomsNum) ? bedroomsNum : null;
 
   const groupsIn = Array.isArray(body?.keywordGroups) ? body.keywordGroups : [];
   const groups = [...new Set(groupsIn.map(String))].filter((g) =>
     KNOWN_GROUPS.has(g),
   );
 
-  return { location, maxPrice, groups };
+  const sourceSite =
+    typeof body?.sourceSite === "string" && KNOWN_SITES.has(body.sourceSite)
+      ? body.sourceSite
+      : "";
+
+  // Radius only makes sense with a real point — validate lat/lng together and
+  // drop radius if either is missing/out of range, rather than sending GitHub
+  // a radius with no center to apply it around.
+  const latNum = Number(body?.lat);
+  const lngNum = Number(body?.lng);
+  const hasPoint =
+    Number.isFinite(latNum) &&
+    Number.isFinite(lngNum) &&
+    latNum >= -90 &&
+    latNum <= 90 &&
+    lngNum >= -180 &&
+    lngNum <= 180;
+  const lat = hasPoint ? latNum : null;
+  const lng = hasPoint ? lngNum : null;
+  const radiusMiles = hasPoint ? positiveIntOrNull(body?.radiusMiles) : null;
+
+  return {
+    location,
+    maxPrice,
+    minPrice,
+    bedrooms,
+    groups,
+    sourceSite,
+    lat,
+    lng,
+    radiusMiles,
+  };
 }
 
 export default async function handler(req, res) {
@@ -147,7 +205,13 @@ export default async function handler(req, res) {
         inputs: {
           location: scope.location,
           max_price: scope.maxPrice != null ? String(scope.maxPrice) : "",
+          min_price: scope.minPrice != null ? String(scope.minPrice) : "",
+          bedrooms: scope.bedrooms != null ? String(scope.bedrooms) : "",
           groups: scope.groups.join(","),
+          sites: scope.sourceSite,
+          lat: scope.lat != null ? String(scope.lat) : "",
+          lng: scope.lng != null ? String(scope.lng) : "",
+          radius_miles: scope.radiusMiles != null ? String(scope.radiusMiles) : "",
         },
       }),
     });

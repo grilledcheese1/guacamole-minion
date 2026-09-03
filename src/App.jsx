@@ -68,14 +68,35 @@ export default function App() {
   // What "Run scrape now" scopes the scrape to — see ScrapeButton.jsx and
   // api/trigger-scrape.js. address doubles as the free-text location the
   // scraper's search queries get built with (e.g. "cheap apartments in
-  // Austin, TX"), not the geocoded lat/lng — the scraper searches by text.
+  // Austin, TX"); lat/lng/radiusMiles additionally scope the google_maps
+  // engine's results to that radius (apartments.py's radius_to_ll) — an
+  // approximation, since neither SerpAPI engine has a real numeric-radius
+  // parameter. minPrice/bedrooms/sourceSite have no structured parameter
+  // either, so the scraper folds them into its query text (see
+  // keywords.build_search_plan's BEDROOM_PHRASES / _price_phrase).
   const scrapeScope = useMemo(
     () => ({
       location: filters.address || "",
       maxPrice: filters.maxPrice,
+      minPrice: filters.minPrice,
+      bedrooms: filters.bedrooms,
       keywordGroups: filters.keywordGroups,
+      sourceSite: filters.sourceSite,
+      lat: filters.lat,
+      lng: filters.lng,
+      radiusMiles: filters.radiusMiles,
     }),
-    [filters.address, filters.maxPrice, filters.keywordGroups],
+    [
+      filters.address,
+      filters.maxPrice,
+      filters.minPrice,
+      filters.bedrooms,
+      filters.keywordGroups,
+      filters.sourceSite,
+      filters.lat,
+      filters.lng,
+      filters.radiusMiles,
+    ],
   );
 
   // Called on each status-poll tick while a triggered scrape is running —

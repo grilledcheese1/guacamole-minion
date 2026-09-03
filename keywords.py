@@ -95,10 +95,33 @@ LISTING_SITES: tuple[str, ...] = (
 )
 
 
+# Bedroom-count filter as query-text phrasing — there's no structured
+# "bedrooms" parameter on either SerpAPI engine, so a chosen count is prepended
+# to every keyword instead (e.g. "2 bedroom" + "cheap apartments for rent").
+BEDROOM_PHRASES: MappingProxyType[int, str] = MappingProxyType(
+    {0: "studio", 1: "1 bedroom", 2: "2 bedroom", 3: "3 bedroom"}
+)
+
+
+def _price_phrase(min_price: int | None, max_price: int | None) -> str:
+    """Same rationale as BEDROOM_PHRASES: no structured min/max price param on
+    either engine, so a range becomes query text."""
+    if min_price and max_price:
+        return f" ${min_price} to ${max_price}"
+    if min_price:
+        return f" over ${min_price}"
+    if max_price:
+        return f" under ${max_price}"
+    return ""
+
+
 def build_queries(
     location: str = "",
     max_price: int | None = None,
+    min_price: int | None = None,
+    bedrooms: int | None = None,
     groups: list[str] | None = None,
+    sites: list[str] | None = None,
     with_sites: bool = False,
 ) -> list[str]:
     """Expand the base keywords into concrete SerpAPI query strings (deduped)."""
@@ -107,18 +130,20 @@ def build_queries(
     else:
         base = list(CHEAP_APARTMENT_KEYWORDS)
 
+    bed_prefix = f"{BEDROOM_PHRASES[bedrooms]} " if bedrooms in BEDROOM_PHRASES else ""
+    price_phrase = _price_phrase(min_price, max_price)
+
     queries: list[str] = []
     for kw in base:
-        q = kw
-        if max_price:
-            q += f" under ${max_price}"
+        q = bed_prefix + kw + price_phrase
         if location:
             q += f" in {location}"
         queries.append(q)
 
     if with_sites:
         anchor = f"cheap apartments in {location}" if location else "cheap apartments"
-        queries.extend(f"{anchor} site:{site}" for site in LISTING_SITES)
+        for site in sites or LISTING_SITES:
+            queries.append(f"{anchor} site:{site}")
 
     # De-dupe, preserve order.
     seen: set[str] = set()
@@ -165,7 +190,10 @@ def is_map_friendly(query: str) -> bool:
 def build_search_plan(
     location: str = "",
     max_price: int | None = None,
+    min_price: int | None = None,
+    bedrooms: int | None = None,
     groups: list[str] | None = None,
+    sites: list[str] | None = None,
     with_sites: bool = False,
 ) -> list[tuple[str, str, str]]:
     """Expand the curated keywords into ``(engine, query, keyword_group)`` triples.
@@ -175,6 +203,12 @@ def build_search_plan(
     everything else, including the ``site:``-filtered queries the maps engine
     cannot serve (tagged group ``"sources"``). Deduped on ``(engine, query)``,
     order preserved.
+
+    ``bedrooms``/``min_price``/``max_price`` have no structured parameter on
+    either SerpAPI engine, so they're folded into the query text (see
+    BEDROOM_PHRASES / _price_phrase) — an approximation, not a hard filter;
+    ``sites`` (a subset of LISTING_SITES) narrows which ``site:`` queries
+    ``with_sites`` generates, defaulting to all of them.
     """
     plan: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str]] = set()
@@ -185,28 +219,30 @@ def build_search_plan(
             seen.add(key)
             plan.append((engine, query, group))
 
+    bed_prefix = f"{BEDROOM_PHRASES[bedrooms]} " if bedrooms in BEDROOM_PHRASES else ""
+    price_phrase = _price_phrase(min_price, max_price)
+
     selected = groups if groups else list(KEYWORD_GROUPS)
     for group in selected:
         map_ok = group in MAP_FRIENDLY_GROUPS
+        # unit_types keywords already say "studio" / "1 bedroom" / etc.
+        # themselves — prepending an explicit bedroom count on top of those
+        # would read as contradictory ("2 bedroom ... studio apartments").
+        group_bed_prefix = "" if group == "unit_types" else bed_prefix
         for kw in KEYWORD_GROUPS.get(group, ()):
+            q = group_bed_prefix + kw + price_phrase
             if map_ok and is_map_friendly(kw):
-                q = kw
-                if max_price:
-                    q += f" under ${max_price}"
                 if location:
                     q += f" {location}"  # Maps prefers "<thing> <place>"
                 _add("google_maps", q, group)
             else:
-                q = kw
-                if max_price:
-                    q += f" under ${max_price}"
                 if location:
                     q += f" in {location}"
                 _add("google", q, group)
 
     if with_sites:
         anchor = f"cheap apartments in {location}" if location else "cheap apartments"
-        for site in LISTING_SITES:
+        for site in sites or LISTING_SITES:
             _add("google", f"{anchor} site:{site}", "sources")
 
     return plan

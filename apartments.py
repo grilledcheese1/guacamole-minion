@@ -91,17 +91,20 @@ def search_listings(query: str, num: int = 10) -> list[dict]:
     return response.get("organic_results", []) or []
 
 
-def search_map_listings(query: str) -> list[dict]:
+def search_map_listings(query: str, ll: str | None = None) -> list[dict]:
     """Return local place results for `query` from SerpAPI's google_maps engine.
-    Each result carries gps_coordinates, so these listings skip geocoding."""
+    Each result carries gps_coordinates, so these listings skip geocoding.
+    `ll` (SerpAPI's "@lat,lng,zoomz" coordinate format — see radius_to_ll())
+    centers/scopes results to a radius when the location filter had a point."""
     client = get_client()
-    response = client.search(
-        {
-            "engine": "google_maps",
-            "type": "search",
-            "q": query,
-        }
-    )
+    params = {
+        "engine": "google_maps",
+        "type": "search",
+        "q": query,
+    }
+    if ll:
+        params["ll"] = ll
+    response = client.search(params)
     local = response.get("local_results") or []
     if local:
         return local
@@ -330,6 +333,26 @@ def _had_price(url: str) -> bool:
 _MAP_PLACE_URL = "https://www.google.com/maps/place/?q=place_id:{}"
 
 
+def radius_to_ll(lat: float, lng: float, radius_miles: float | None) -> str:
+    """Approximate a SerpAPI google_maps `ll` ("@lat,lng,zoomz") from a search
+    radius in miles, for search_map_listings(). Neither SerpAPI nor Google
+    Maps takes a direct numeric-radius parameter, so this is a real-world
+    approximation, not an exact bound: tighter zoom for a smaller radius,
+    looser for a larger one, falling back to a wide city-scale zoom when the
+    radius is unset or large."""
+    if radius_miles is not None and radius_miles <= 1:
+        zoom = 15
+    elif radius_miles is not None and radius_miles <= 5:
+        zoom = 13
+    elif radius_miles is not None and radius_miles <= 10:
+        zoom = 12
+    elif radius_miles is not None and radius_miles <= 25:
+        zoom = 10
+    else:
+        zoom = 9
+    return f"@{lat},{lng},{zoom}z"
+
+
 def _coords_from_result(result: dict) -> tuple[float | None, float | None]:
     """Pull (lat, lng) from a SerpAPI local result, handling the google_maps
     ('gps_coordinates' / latitude,longitude) and google_local ('coordinates' /
@@ -428,11 +451,13 @@ def _collect_web_listings(query: str, keyword_group: str | None) -> list[dict]:
     return listings
 
 
-def _collect_map_listings(query: str, keyword_group: str | None) -> list[dict]:
+def _collect_map_listings(
+    query: str, keyword_group: str | None, ll: str | None = None
+) -> list[dict]:
     """google_maps path: local results already carry coordinates; when a result
     links to a real website we also fetch it to fill in price / beds / sqft."""
     listings: list[dict] = []
-    for result in search_map_listings(query):
+    for result in search_map_listings(query, ll=ll):
         listing = parse_map_result(result)
         if listing is None:
             continue
@@ -465,11 +490,14 @@ def _collect_map_listings(query: str, keyword_group: str | None) -> list[dict]:
 
 
 def run(
-    query: str, engine: str = "google", keyword_group: str | None = None
+    query: str,
+    engine: str = "google",
+    keyword_group: str | None = None,
+    ll: str | None = None,
 ) -> None:
     init_db()
     listings = (
-        _collect_map_listings(query, keyword_group)
+        _collect_map_listings(query, keyword_group, ll=ll)
         if engine == "google_maps"
         else _collect_web_listings(query, keyword_group)
     )
@@ -513,26 +541,57 @@ if __name__ == "__main__":
         # No query given: sweep the curated plan — google_maps where it fits,
         # google text search elsewhere (including site:-filtered queries).
         # Optionally scoped by SCRAPE_LOCATION / SCRAPE_MAX_PRICE /
-        # SCRAPE_GROUPS — set by the "Run scrape now" button from whatever
-        # filters were active in the browser when it was clicked
-        # (api/trigger-scrape.js forwards them as workflow_dispatch inputs;
-        # scrape.yml maps those inputs to these env vars). All blank/unset
-        # runs the original unscoped, nationwide sweep of every group.
+        # SCRAPE_MIN_PRICE / SCRAPE_BEDROOMS / SCRAPE_GROUPS / SCRAPE_SITES /
+        # SCRAPE_LAT / SCRAPE_LNG / SCRAPE_RADIUS_MILES — set by the "Run
+        # scrape now" button from whatever filters were active in the browser
+        # when it was clicked (api/trigger-scrape.js forwards them as
+        # workflow_dispatch inputs; scrape.yml maps those inputs to these env
+        # vars). All blank/unset runs the original unscoped, nationwide sweep
+        # of every group.
+        def _int_env(name: str) -> int | None:
+            raw = os.getenv(name, "").strip()
+            return int(raw) if raw.lstrip("-").isdigit() else None
+
+        def _float_env(name: str) -> float | None:
+            raw = os.getenv(name, "").strip()
+            try:
+                return float(raw) if raw else None
+            except ValueError:
+                return None
+
         location = os.getenv("SCRAPE_LOCATION", "").strip()
-        max_price_raw = os.getenv("SCRAPE_MAX_PRICE", "").strip()
-        max_price = int(max_price_raw) if max_price_raw.isdigit() else None
+        max_price = _int_env("SCRAPE_MAX_PRICE")
+        min_price = _int_env("SCRAPE_MIN_PRICE")
+        bedrooms = _int_env("SCRAPE_BEDROOMS")
         groups_raw = os.getenv("SCRAPE_GROUPS", "").strip()
         groups = [g.strip() for g in groups_raw.split(",") if g.strip()] or None
+        sites_raw = os.getenv("SCRAPE_SITES", "").strip()
+        sites = [s.strip() for s in sites_raw.split(",") if s.strip()] or None
 
-        if location or max_price or groups:
+        # Radius only means anything with an actual point — bedrooms/min/max
+        # price and groups/sites work as query-text scoping regardless.
+        lat = _float_env("SCRAPE_LAT")
+        lng = _float_env("SCRAPE_LNG")
+        radius_miles = _float_env("SCRAPE_RADIUS_MILES")
+        ll = radius_to_ll(lat, lng, radius_miles) if lat is not None and lng is not None else None
+
+        if location or max_price or min_price or bedrooms is not None or groups or sites or ll:
             print(
                 f"[scope] location={location or '(any)'} "
-                f"max_price={max_price or '(any)'} groups={groups or '(all)'}"
+                f"price={min_price or '(any)'}-{max_price or '(any)'} "
+                f"bedrooms={bedrooms if bedrooms is not None else '(any)'} "
+                f"groups={groups or '(all)'} sites={sites or '(all)'} ll={ll or '(none)'}"
             )
 
         plan = build_search_plan(
-            location=location, max_price=max_price, groups=groups, with_sites=True
+            location=location,
+            max_price=max_price,
+            min_price=min_price,
+            bedrooms=bedrooms,
+            groups=groups,
+            sites=sites,
+            with_sites=True,
         )
         for plan_engine, plan_query, plan_group in plan:
-            run(plan_query, engine=plan_engine, keyword_group=plan_group)
+            run(plan_query, engine=plan_engine, keyword_group=plan_group, ll=ll)
     print_summary()

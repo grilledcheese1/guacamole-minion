@@ -14,8 +14,32 @@ on:
         description: "Only search for listings under this price (blank = no cap)"
         required: false
         default: ""
+      min_price:
+        description: "Only search for listings over this price (blank = no floor)"
+        required: false
+        default: ""
+      bedrooms:
+        description: "Bedroom count as query text — 0/1/2/3 (blank = any)"
+        required: false
+        default: ""
       groups:
         description: "Comma-separated keyword groups to search (blank = all)"
+        required: false
+        default: ""
+      sites:
+        description: "Comma-separated listing sites for the site: queries (blank = all)"
+        required: false
+        default: ""
+      lat:
+        description: "Latitude, with lng+radius_miles, to scope google_maps results (blank = none)"
+        required: false
+        default: ""
+      lng:
+        description: "Longitude — see lat"
+        required: false
+        default: ""
+      radius_miles:
+        description: "Approximate search radius in miles — only applies with lat+lng set"
         required: false
         default: ""
 
@@ -46,7 +70,13 @@ jobs:
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           SCRAPE_LOCATION: ${{ inputs.location }}
           SCRAPE_MAX_PRICE: ${{ inputs.max_price }}
+          SCRAPE_MIN_PRICE: ${{ inputs.min_price }}
+          SCRAPE_BEDROOMS: ${{ inputs.bedrooms }}
           SCRAPE_GROUPS: ${{ inputs.groups }}
+          SCRAPE_SITES: ${{ inputs.sites }}
+          SCRAPE_LAT: ${{ inputs.lat }}
+          SCRAPE_LNG: ${{ inputs.lng }}
+          SCRAPE_RADIUS_MILES: ${{ inputs.radius_miles }}
 
       - name: Geocode new listings
         continue-on-error: true
