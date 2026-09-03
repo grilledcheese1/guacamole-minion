@@ -27,6 +27,7 @@
 // Env: TURSO_DATABASE_URL, TURSO_AUTH_TOKEN
 
 import { createClient } from "@libsql/client";
+import { readJsonBody } from "./_http.js";
 
 const EARTH_RADIUS_MILES = 3958.7613;
 const MILES_PER_DEG_LAT = 69.0;
@@ -97,24 +98,6 @@ function parseListParam(value) {
 function parseBoolParam(value) {
   const raw = String(firstValue(value) ?? "").trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes";
-}
-
-async function readJsonBody(req) {
-  if (req.body && typeof req.body === "object") return req.body;
-  if (typeof req.body === "string") {
-    try {
-      return JSON.parse(req.body);
-    } catch {
-      return {};
-    }
-  }
-  let raw = "";
-  try {
-    for await (const chunk of req) raw += chunk;
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
 }
 
 export default async function handler(req, res) {

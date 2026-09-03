@@ -5,6 +5,19 @@ name: scrape
 # which calls the GitHub REST API to dispatch this workflow.
 on:
   workflow_dispatch:
+    inputs:
+      location:
+        description: "Scope the search to this city/ZIP (blank = nationwide sweep)"
+        required: false
+        default: ""
+      max_price:
+        description: "Only search for listings under this price (blank = no cap)"
+        required: false
+        default: ""
+      groups:
+        description: "Comma-separated keyword groups to search (blank = all)"
+        required: false
+        default: ""
 
 concurrency:
   group: scrape
@@ -31,6 +44,9 @@ jobs:
           GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          SCRAPE_LOCATION: ${{ inputs.location }}
+          SCRAPE_MAX_PRICE: ${{ inputs.max_price }}
+          SCRAPE_GROUPS: ${{ inputs.groups }}
 
       - name: Geocode new listings
         continue-on-error: true

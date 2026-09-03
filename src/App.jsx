@@ -65,6 +65,19 @@ export default function App() {
   const apiParams = useMemo(() => filtersToApiParams(filters), [filters]);
   const { listings, count, loading, error, refetch, poll } = useListings(apiParams);
 
+  // What "Run scrape now" scopes the scrape to — see ScrapeButton.jsx and
+  // api/trigger-scrape.js. address doubles as the free-text location the
+  // scraper's search queries get built with (e.g. "cheap apartments in
+  // Austin, TX"), not the geocoded lat/lng — the scraper searches by text.
+  const scrapeScope = useMemo(
+    () => ({
+      location: filters.address || "",
+      maxPrice: filters.maxPrice,
+      keywordGroups: filters.keywordGroups,
+    }),
+    [filters.address, filters.maxPrice, filters.keywordGroups],
+  );
+
   // Called on each status-poll tick while a triggered scrape is running —
   // merges in whatever's landed in the db so far (apartments.py upserts each
   // query's results as it goes, well before the run finishes) without ever
@@ -177,6 +190,7 @@ export default function App() {
             onDispatched={refreshStatus}
             onProgress={handleScrapeProgress}
             onCompleted={handleScrapeCompleted}
+            scope={scrapeScope}
           />
           <WipeDataButton onWiped={handleDataWiped} />
         </div>

@@ -20,6 +20,7 @@ Run:
 
 from __future__ import annotations
 
+import os
 import random
 import re
 import sys
@@ -511,6 +512,27 @@ if __name__ == "__main__":
     else:
         # No query given: sweep the curated plan — google_maps where it fits,
         # google text search elsewhere (including site:-filtered queries).
-        for plan_engine, plan_query, plan_group in build_search_plan(with_sites=True):
+        # Optionally scoped by SCRAPE_LOCATION / SCRAPE_MAX_PRICE /
+        # SCRAPE_GROUPS — set by the "Run scrape now" button from whatever
+        # filters were active in the browser when it was clicked
+        # (api/trigger-scrape.js forwards them as workflow_dispatch inputs;
+        # scrape.yml maps those inputs to these env vars). All blank/unset
+        # runs the original unscoped, nationwide sweep of every group.
+        location = os.getenv("SCRAPE_LOCATION", "").strip()
+        max_price_raw = os.getenv("SCRAPE_MAX_PRICE", "").strip()
+        max_price = int(max_price_raw) if max_price_raw.isdigit() else None
+        groups_raw = os.getenv("SCRAPE_GROUPS", "").strip()
+        groups = [g.strip() for g in groups_raw.split(",") if g.strip()] or None
+
+        if location or max_price or groups:
+            print(
+                f"[scope] location={location or '(any)'} "
+                f"max_price={max_price or '(any)'} groups={groups or '(all)'}"
+            )
+
+        plan = build_search_plan(
+            location=location, max_price=max_price, groups=groups, with_sites=True
+        )
+        for plan_engine, plan_query, plan_group in plan:
             run(plan_query, engine=plan_engine, keyword_group=plan_group)
     print_summary()
