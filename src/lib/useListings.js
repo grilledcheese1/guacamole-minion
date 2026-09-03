@@ -39,6 +39,11 @@ export function useListings(params) {
   // stale rows back into fresher, filter-changed state.
   const queryRef = useRef(query);
   queryRef.current = query;
+  // Bumped on every poll() call; a response only applies if it's still the
+  // most recently issued poll when it resolves — otherwise a slow request
+  // (cold start, network hiccup) landing after a faster, later one would
+  // overwrite fresher state with stale fields and regress `count`.
+  const pollSeqRef = useRef(0);
 
   const load = useCallback(() => {
     abortRef.current?.abort();
@@ -88,6 +93,7 @@ export function useListings(params) {
   // replace) or a user action removes it.
   const poll = useCallback(() => {
     const requestQuery = query;
+    const seq = ++pollSeqRef.current;
     fetch(`/api/listings?${requestQuery}`)
       .then((response) => (response.ok ? response.json() : null))
       .then((data) => {
@@ -95,6 +101,9 @@ export function useListings(params) {
         // The filters changed since this request went out — a `load()` already
         // replaced state for the new query; don't merge this stale response in.
         if (queryRef.current !== requestQuery) return;
+        // A later poll has already started (or finished) — this one is stale
+        // even though it's arriving now; discard rather than merge it in.
+        if (seq !== pollSeqRef.current) return;
 
         setState((prev) => {
           const fresh = new Map(data.listings.map((l) => [String(l.id), l]));

@@ -53,6 +53,17 @@ export default function ScrapeButton({ onDispatched, onProgress, onCompleted }) 
   const pollDeadlineRef = useRef(0);
   const runStartedRef = useRef(0);
 
+  // pollOnce (below) re-schedules itself via setTimeout(pollOnce, ...) —
+  // whichever closure fires tick N is the one that schedules tick N+1, so if
+  // pollOnce closed over onProgress/onCompleted directly, a filter change
+  // mid-run (which gives App.jsx's handlers new identities) would leave the
+  // rest of that run's ticks calling the stale, pre-change callbacks. Reading
+  // through refs keeps pollOnce itself stable and every tick current.
+  const onProgressRef = useRef(onProgress);
+  onProgressRef.current = onProgress;
+  const onCompletedRef = useRef(onCompleted);
+  onCompletedRef.current = onCompleted;
+
   const scheduleReset = useCallback((ms) => {
     clearTimeout(resetTimerRef.current);
     resetTimerRef.current = setTimeout(() => {
@@ -69,7 +80,7 @@ export default function ScrapeButton({ onDispatched, onProgress, onCompleted }) 
   const pollOnce = useCallback(async () => {
     // Fire on every tick, independent of the status fetch below — a slow or
     // failed status check shouldn't hold up progressively showing new rows.
-    onProgress?.();
+    onProgressRef.current?.();
 
     let data = null;
     try {
@@ -93,7 +104,7 @@ export default function ScrapeButton({ onDispatched, onProgress, onCompleted }) 
         stopPolling();
         if (!data.conclusion || data.conclusion === "success") {
           setPhase("done");
-          onCompleted?.();
+          onCompletedRef.current?.();
           scheduleReset(5000);
         } else {
           setPhase("error");
@@ -111,7 +122,7 @@ export default function ScrapeButton({ onDispatched, onProgress, onCompleted }) 
       return;
     }
     pollTimerRef.current = setTimeout(pollOnce, POLL_INTERVAL_MS);
-  }, [onCompleted, onProgress, scheduleReset, stopPolling]);
+  }, [scheduleReset, stopPolling]);
 
   const startPolling = useCallback(() => {
     stopPolling();
